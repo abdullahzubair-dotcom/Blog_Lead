@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getWorkflow, getWorkflowProspects, getEmailTemplate, upsertOutreachEmail, getContactedAuthorIds } from "@/lib/db/queries";
 import { startGen, bumpGen, finishGen, isGenRunning } from "@/lib/email/genBuffer";
 
@@ -131,14 +131,14 @@ async function runGeneration(workflowId: string, templateId?: string) {
         const body = clean(template?.body ?? `Hi {{author_name}},\n\n{{custom_line}}\n\nBest,\nAbdullah`);
 
         await upsertOutreachEmail({ workflow_id: workflowId, author_id: p.author_id, template_id: templateId ?? undefined, subject, body, status: "ready" });
-        bumpGen(workflowId);
+        await bumpGen(workflowId);
       } catch (e: any) {
-        bumpGen(workflowId, `${author.full_name}: ${e.message}`);
+        await bumpGen(workflowId, `${author.full_name}: ${e.message}`);
       }
     }));
   }
 
-  finishGen(workflowId);
+  await finishGen(workflowId);
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -147,16 +147,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const workflow = await getWorkflow(id);
   if (!workflow) return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
-  if (isGenRunning(id)) return NextResponse.json({ started: false, alreadyRunning: true });
+  if (await isGenRunning(id)) return NextResponse.json({ started: false, alreadyRunning: true });
 
   const { prospects } = await getWorkflowProspects(id, { limit: 500 });
   const contactedElsewhere = await getContactedAuthorIds(id);
   const total = prospects.filter((p) => p.included && !contactedElsewhere.has(p.author_id)).length;
   if (total === 0) return NextResponse.json({ started: false, total: 0, reason: "No new prospects to generate (already contacted or none selected)." });
 
-  // Fire-and-forget: generation continues even if the client disconnects.
-  startGen(id, total);
-  runGeneration(id, template_id).catch(() => finishGen(id));
+  // Mark started BEFORE responding so the progress poll (possibly on another serverless
+  // instance) sees it immediately in Redis. after() keeps the function alive to run the
+  // generation post-response — the Vercel-supported way to do work after the response
+  // (a bare fire-and-forget promise gets frozen once the response is sent).
+  await startGen(id, total);
+  after(async () => { try { await runGeneration(id, template_id); } catch { await finishGen(id); } });
 
   return NextResponse.json({ started: true, total });
 }
