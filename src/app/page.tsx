@@ -77,6 +77,7 @@ export default function HomePage() {
   // Manual "Add Prospect"
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState({ full_name: "", email: "", publication: "", campaign_id: "" });
+  const [addArticles, setAddArticles] = useState<string[]>([""]);
   const [addSaving, setAddSaving] = useState(false);
   const [resumableCheckpoint, setResumableCheckpoint] = useState<{ round: number; usedQueries: string[]; savedAt: string } | null>(null);
 
@@ -373,14 +374,14 @@ export default function HomePage() {
 
   const openAddProspect = () => {
     setAddForm({ full_name: "", email: "", publication: "", campaign_id: filterCampaignId || discoveryCampaignId || "" });
+    setAddArticles([""]);
     setAddOpen(true);
   };
 
   const submitAddProspect = async () => {
-    if (!addForm.full_name.trim() || (!addForm.publication.trim() && !addForm.email.includes("@"))) {
-      toast.error("Name and a publication (or an email) are required.");
-      return;
-    }
+    const articleUrls = addArticles.map((u) => u.trim()).filter((u) => /^https?:\/\//i.test(u));
+    if (!addForm.full_name.trim()) { toast.error("Name is required."); return; }
+    if (articleUrls.length === 0) { toast.error("At least one article link (https://…) is required."); return; }
     setAddSaving(true);
     try {
       const res = await fetch("/api/prospects/manual", {
@@ -390,6 +391,7 @@ export default function HomePage() {
           full_name: addForm.full_name,
           email: addForm.email || undefined,
           publication: addForm.publication || undefined,
+          article_urls: articleUrls,
           campaign_id: addForm.campaign_id || undefined,
         }),
       });
@@ -911,9 +913,34 @@ export default function HomePage() {
               <Input placeholder="jane@example.com" value={addForm.email} onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))} />
             </div>
             <div className="space-y-1.5">
-              <Label>Publication / website</Label>
+              <Label>Article links <span className="text-muted-foreground font-normal">(at least one)</span></Label>
+              <div className="space-y-2">
+                {addArticles.map((u, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="https://example.com/their-article"
+                      value={u}
+                      onChange={(e) => setAddArticles((arr) => arr.map((x, j) => j === i ? e.target.value : x))}
+                    />
+                    {addArticles.length > 1 && (
+                      <Button variant="ghost" size="sm" className="h-9 w-9 p-0 shrink-0 text-muted-foreground hover:text-red-400"
+                        onClick={() => setAddArticles((arr) => arr.filter((_, j) => j !== i))}>
+                        <XCircle className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-violet-400 hover:text-violet-300"
+                onClick={() => setAddArticles((arr) => [...arr, ""])}>
+                <UserPlus className="h-3 w-3" />Add another link
+              </Button>
+              <p className="text-xs text-muted-foreground">Links to pieces they wrote. The publication domain is taken from the first link unless you set one below.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Publication / website <span className="text-muted-foreground font-normal">(optional)</span></Label>
               <Input placeholder="example.com" value={addForm.publication} onChange={(e) => setAddForm((f) => ({ ...f, publication: e.target.value }))} />
-              <p className="text-xs text-muted-foreground">Domain or URL. Optional if you provide an email — we&apos;ll use its domain.</p>
+              <p className="text-xs text-muted-foreground">Overrides the domain inferred from the article link.</p>
             </div>
             {campaigns.length > 0 && (
               <div className="space-y-1.5">
@@ -931,7 +958,7 @@ export default function HomePage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={submitAddProspect} disabled={addSaving || !addForm.full_name.trim()}>
+            <Button onClick={submitAddProspect} disabled={addSaving || !addForm.full_name.trim() || !addArticles.some((u) => /^https?:\/\//i.test(u.trim()))}>
               {addSaving && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Add Prospect
             </Button>

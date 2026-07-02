@@ -532,6 +532,8 @@ export async function getProspects(opts: {
   const { data, error } = await supabaseAdmin
     .from("authors")
     .select(
+      // Every prospect has ≥1 article (discovery authors always do; manual adds require an
+      // article link). The !inner join enforces "prospects are article authors".
       `*,
       domain:domains(*),
       article_authors!inner(
