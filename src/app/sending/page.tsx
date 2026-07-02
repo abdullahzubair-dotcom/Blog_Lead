@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check } from "lucide-react";
+import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,11 @@ export default function SendingPage() {
   const [editLoading, setEditLoading] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // Per-recipient reschedule (override this one email's send time)
+  const [reschedId, setReschedId] = useState<string | null>(null);
+  const [reschedVal, setReschedVal] = useState(""); // datetime-local (recipient-agnostic, browser local)
+  const [savingResched, setSavingResched] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const data = await fetch("/api/emails/status").then((r) => r.json());
@@ -115,6 +120,26 @@ export default function SendingPage() {
     const full = await fetch(`/api/emails/${e.id}`).then((r) => r.ok ? r.json() : null).catch(() => null);
     if (full) setEditForm({ subject: full.subject ?? "", body: full.body ?? "" });
     setEditLoading(false);
+  }
+
+  // datetime-local string (browser local) for an ISO instant, for the reschedule input.
+  function toLocalInput(iso?: string): string {
+    const d = iso ? new Date(iso) : new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  // Override one email's send time. `iso` is a UTC instant.
+  async function reschedule(id: string, iso: string, note: string) {
+    setSavingResched(true);
+    await fetch(`/api/emails/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scheduled_at: iso, status: "scheduled" }),
+    }).catch(() => {});
+    setSavingResched(false);
+    setReschedId(null);
+    toast.success(note);
+    await load();
   }
 
   async function saveEdit() {
@@ -201,27 +226,53 @@ export default function SendingPage() {
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">No emails scheduled</p>
             ) : (
               status!.upcoming.map((e) => (
-                <div key={e.id} className="px-4 py-3 flex items-center gap-3 group">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate flex items-center gap-1.5">
-                      {e.author_name}
-                      {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
-                    </p>
-                    <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
+                <div key={e.id} className="px-4 py-3 group">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate flex items-center gap-1.5">
+                        {e.author_name}
+                        {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-xs font-medium text-blue-400">{e.local_label}</p>
+                      <p className="text-[10px] text-muted-foreground">{e.tz.split("/").pop()?.replace("_", " ")}</p>
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Reschedule this email"
+                        onClick={() => { setReschedId(reschedId === e.id ? null : e.id); setReschedVal(toLocalInput(e.scheduled_at)); }}>
+                        <CalendarClock className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit this email" onClick={() => openEditor(e)}>
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-400" title="Cancel — remove from queue"
+                        disabled={cancelling === e.id} onClick={() => cancelScheduled(e)}>
+                        {cancelling === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-xs font-medium text-blue-400">{e.local_label}</p>
-                    <p className="text-[10px] text-muted-foreground">{e.tz.split("/").pop()?.replace("_", " ")}</p>
-                  </div>
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit this email" onClick={() => openEditor(e)}>
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-400" title="Cancel — remove from queue"
-                      disabled={cancelling === e.id} onClick={() => cancelScheduled(e)}>
-                      {cancelling === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
-                    </Button>
-                  </div>
+                  {reschedId === e.id && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-muted/30 border border-border p-2">
+                      <input
+                        type="datetime-local"
+                        value={reschedVal}
+                        onChange={(ev) => setReschedVal(ev.target.value)}
+                        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      />
+                      <Button size="sm" className="h-8 text-xs" disabled={savingResched || !reschedVal}
+                        onClick={() => reschedule(e.id, new Date(reschedVal).toISOString(), `Rescheduled ${e.author_name}.`)}>
+                        {savingResched ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save time"}
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-8 text-xs" disabled={savingResched}
+                        onClick={() => reschedule(e.id, new Date().toISOString(), `${e.author_name} set to send on the next run.`)}>
+                        Send next run
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setReschedId(null)}>Cancel</Button>
+                      <span className="text-[10px] text-muted-foreground w-full">Time is in your local zone ({tzAbbr}). Sends at the next processor run on/after this time.</span>
+                    </div>
+                  )}
                 </div>
               ))
             )}
