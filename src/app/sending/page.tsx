@@ -51,7 +51,17 @@ export default function SendingPage() {
   const [processing, setProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [now, setNow] = useState<Date | null>(null); // live clock (client-only, ticks every 1s)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setNow(new Date());
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const tzAbbr = now
+    ? new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(now).find((p) => p.type === "timeZoneName")?.value
+    : "";
 
   // Edit-a-queued-email sheet
   const [editing, setEditing] = useState<StatusEmail | null>(null);
@@ -140,6 +150,13 @@ export default function SendingPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {now && (
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm tabular-nums" title="Your current local time — queued sends fire at each recipient's local time">
+              <Clock className="h-3.5 w-3.5 text-violet-400" />
+              <span className="font-medium">{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+              <span className="text-xs text-muted-foreground">{tzAbbr}</span>
+            </div>
+          )}
           <Button variant="outline" size="sm" onClick={load} className="gap-1.5">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />Refresh
           </Button>
