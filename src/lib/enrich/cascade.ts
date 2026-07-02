@@ -1,4 +1,4 @@
-import { getAuthorArticleUrls, getKnownEmailsByDomain } from "@/lib/db/queries";
+import { getAuthorArticleUrls, getKnownEmailsByDomain, getStoredLinkedin } from "@/lib/db/queries";
 import { scrapePageSignals, type PageSignals } from "./pageSignals";
 import { findLinkedinUrl } from "./findLinkedin";
 import { linkedinToEmail, blitzEnabled } from "./blitz";
@@ -56,44 +56,55 @@ export async function resolveEmailCascade(
     socials.personalSite ??= sig.personalSite;
   };
 
-  // 1) Scan ALL their posts for a direct email + their LinkedIn (stop scanning once
-  //    LinkedIn turns up — that's enough to get the email via Blitz).
-  const urls = await getAuthorArticleUrls(t.id, MAX_POSTS_SCAN).catch(() => []);
-  if (urls.length) {
-    onStep(`scanning ${urls.length} post${urls.length === 1 ? "" : "s"} for email & LinkedIn…`);
-    for (let i = 0; i < urls.length; i++) {
-      onStep(`↳ post ${i + 1}/${urls.length}: ${hostOf(urls[i])}`);
-      const sig = await scrapePageSignals(urls[i]);
-      if (sig?.emails[0]) { onStep(`found email on their page`); return { email: sig.emails[0], source: "page-scrape", score: 90 }; }
-      absorb(sig);
-      if (socials.linkedin) { onStep(`found LinkedIn on a post: ${socials.linkedin.replace("https://", "")}`); break; }
+  // If we ALREADY have this author's LinkedIn on file (from the LinkedIn finder or a prior
+  // email run), reuse it and skip the post scan + web search entirely — no wasted search.
+  const stored = await getStoredLinkedin(t.id).catch(() => null);
+  let linkedin: string | undefined = stored ?? undefined;
+  let linkedinIsNew = false;
+
+  if (linkedin) {
+    onStep(`LinkedIn already on file (${linkedin.replace(/^https?:\/\//, "")}) — skipping search`);
+  } else {
+    // 1) Scan ALL their posts for a direct email + their LinkedIn (stop scanning once
+    //    LinkedIn turns up — that's enough to get the email via Blitz).
+    const urls = await getAuthorArticleUrls(t.id, MAX_POSTS_SCAN).catch(() => []);
+    if (urls.length) {
+      onStep(`scanning ${urls.length} post${urls.length === 1 ? "" : "s"} for email & LinkedIn…`);
+      for (let i = 0; i < urls.length; i++) {
+        onStep(`↳ post ${i + 1}/${urls.length}: ${hostOf(urls[i])}`);
+        const sig = await scrapePageSignals(urls[i]);
+        if (sig?.emails[0]) { onStep(`found email on their page`); return { email: sig.emails[0], source: "page-scrape", score: 90 }; }
+        absorb(sig);
+        if (socials.linkedin) { onStep(`found LinkedIn on a post: ${socials.linkedin.replace("https://", "")}`); break; }
+      }
     }
-  }
 
-  // 2) No LinkedIn yet? Check their social profiles (bios often link LinkedIn + email).
-  if (!socials.linkedin) {
-    for (const [label, surl] of [["X", socials.twitter], ["Instagram", socials.instagram], ["site", socials.personalSite]] as const) {
-      if (!surl || socials.linkedin) continue;
-      onStep(`checking ${label} profile for LinkedIn/email…`);
-      const sig = await scrapePageSignals(surl);
-      if (sig?.emails[0]) { onStep(`found email on ${label}`); return { email: sig.emails[0], source: "social", score: 80 }; }
-      absorb(sig);
-      if (socials.linkedin) onStep(`found LinkedIn on ${label}: ${socials.linkedin.replace("https://", "")}`);
+    // 2) No LinkedIn yet? Check their social profiles (bios often link LinkedIn + email).
+    if (!socials.linkedin) {
+      for (const [label, surl] of [["X", socials.twitter], ["Instagram", socials.instagram], ["site", socials.personalSite]] as const) {
+        if (!surl || socials.linkedin) continue;
+        onStep(`checking ${label} profile for LinkedIn/email…`);
+        const sig = await scrapePageSignals(surl);
+        if (sig?.emails[0]) { onStep(`found email on ${label}`); return { email: sig.emails[0], source: "social", score: 80 }; }
+        absorb(sig);
+        if (socials.linkedin) onStep(`found LinkedIn on ${label}: ${socials.linkedin.replace("https://", "")}`);
+      }
     }
+
+    // 3) Still no LinkedIn? Search the web by name + publication (the paid search).
+    linkedin = socials.linkedin;
+    if (!linkedin) {
+      onStep(`searching the web for LinkedIn (${t.name} @ ${t.publication})…`);
+      linkedin = (await findLinkedinUrl(t.name, t.publication, undefined, onFail("web search")).catch(() => null)) ?? undefined;
+      if (linkedin) onStep(`found LinkedIn: ${linkedin.replace("https://", "")}`);
+      else onStep(`no LinkedIn found anywhere`);
+    }
+    linkedinIsNew = !!linkedin;
   }
 
-  // 3) Still no LinkedIn? Search DuckDuckGo by name + publication.
-  let linkedin = socials.linkedin;
-  if (!linkedin) {
-    onStep(`searching the web for LinkedIn (${t.name} @ ${t.publication})…`);
-    linkedin = (await findLinkedinUrl(t.name, t.publication, undefined, onFail("web search")).catch(() => null)) ?? undefined;
-    if (linkedin) onStep(`found LinkedIn: ${linkedin.replace("https://", "")}`);
-    else onStep(`no LinkedIn found anywhere`);
-  }
-
-  // Harvest the LinkedIn regardless of whether we go on to find an email — LinkedIns are
+  // Harvest a NEWLY discovered LinkedIn (a stored one is already saved). LinkedIns are
   // higher-hit-rate and reusable (Blitz can convert them later).
-  if (linkedin) ctx.onLinkedin?.(linkedin);
+  if (linkedin && linkedinIsNew) ctx.onLinkedin?.(linkedin);
 
   // 4) LinkedIn → Blitz → email (Blitz has unlimited credits and needs exactly this)
   if (linkedin && blitzEnabled()) {

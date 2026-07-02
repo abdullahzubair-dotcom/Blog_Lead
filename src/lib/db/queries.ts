@@ -1282,6 +1282,16 @@ export async function getKnownEmailsByDomain(host: string): Promise<Array<{ name
     .map((r: any) => ({ name: r.name, email: r.email }));
 }
 
+// An author's already-stored LinkedIn URL, if any — so the email cascade can reuse it and
+// skip the (paid) web search + post scan. Normalized to an absolute https URL.
+export async function getStoredLinkedin(authorId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from("contacts").select("value").eq("author_id", authorId).eq("type", "linkedin").limit(1).maybeSingle();
+  const v = (data as any)?.value as string | undefined;
+  if (!v) return null;
+  return v.startsWith("http") ? v : `https://${v}`;
+}
+
 // All of an author's article URLs (most recent first, capped) — scraped during
 // enrichment to hunt for their LinkedIn / contact info across everything they wrote.
 export async function getAuthorArticleUrls(authorId: string, limit = 50): Promise<string[]> {
