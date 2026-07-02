@@ -217,6 +217,16 @@ export default function EmailsPage() {
     }).catch(() => {});
   }
 
+  // Clear the "contacted elsewhere" flag so this person can be emailed again (the manual
+  // override). Un-dims their row and re-enables the checkbox immediately.
+  async function uncontact(authorId: string) {
+    setContactedElsewhere((s) => { const n = new Set(s); n.delete(authorId); return n; });
+    await fetch(`/api/authors/${authorId}/contacted`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contacted: false }),
+    }).catch(() => {});
+  }
+
   // Poll generation status; runs whether we started it this session or are resuming a
   // job that kept running while the tab was closed. Refetches rows so finished emails
   // appear immediately, and stops when the run is done.
@@ -493,9 +503,18 @@ export default function EmailsPage() {
                             </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0">
-                            <p className="font-medium truncate max-w-[160px] flex items-center gap-1.5">
+                            <p className="font-medium truncate max-w-[180px] flex items-center gap-1.5">
                               {author?.full_name ?? "Unknown"}
-                              {contacted && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">contacted</span>}
+                              {contacted && (
+                                <button
+                                  type="button"
+                                  onClick={() => uncontact(row.author_id)}
+                                  title="Contacted in another campaign. Click to allow emailing them again."
+                                  className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0 hover:bg-amber-500/15 cursor-pointer"
+                                >
+                                  contacted ✕
+                                </button>
+                              )}
                             </p>
                             {email ? (
                               <p className="text-xs truncate max-w-[200px] flex items-center gap-1">
