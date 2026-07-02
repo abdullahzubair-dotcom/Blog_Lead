@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { runDiscoveryPipeline } from "@/lib/pipeline/run";
 import { getCampaign, updateCampaign } from "@/lib/db/queries";
 import { findLatestCheckpoint } from "@/lib/pipeline/checkpoint";
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
 
   // Resume mode — load checkpoint and continue from where we left off
   if (body.resume === true) {
-    const cp = findLatestCheckpoint();
+    const cp = await findLatestCheckpoint();
     if (cp) {
       resume = { usedQueries: cp.usedQueries, round: cp.round, rssComplete: cp.rssComplete, oldRunId: cp.runId };
       if (!campaignId && cp.campaignId) campaignId = cp.campaignId;
@@ -29,6 +29,16 @@ export async function POST(req: NextRequest) {
     }
   } else if (campaignId && resume) {
     await updateCampaign(campaignId, { status: "running" }).catch(() => {});
+  }
+
+  // Auto-continuation from QStash (no browser to stream to): run the next chunk via after()
+  // and return immediately. The UI tracks progress by polling /api/pipeline/live.
+  if (body.auto === true) {
+    after(async () => {
+      try { await runDiscoveryPipeline(undefined, { campaignId, customKeywords, resume }); }
+      catch { if (campaignId) await updateCampaign(campaignId, { status: "done" }).catch(() => {}); }
+    });
+    return NextResponse.json({ continued: true });
   }
 
   const encoder = new TextEncoder();

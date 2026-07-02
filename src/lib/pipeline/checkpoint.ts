@@ -1,7 +1,12 @@
 import { writeFileSync, readFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
+import { redis } from "@/lib/redis";
 
+// Discovery resume checkpoint. On Vercel the filesystem is read-only/ephemeral, so we store
+// the checkpoint in Redis when available (durable across serverless instances) and fall back
+// to the local filesystem for dev. There is only ever one active run, so a single key is enough.
 const DIR = join(process.cwd(), ".pipeline-checkpoints");
+const KEY = "pipeline:checkpoint";
 
 export interface PipelineCheckpoint {
   runId: string;
@@ -17,18 +22,25 @@ function ensureDir() {
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
 }
 
-export function saveCheckpoint(c: PipelineCheckpoint): void {
-  try {
-    ensureDir();
-    writeFileSync(join(DIR, `${c.runId}.json`), JSON.stringify(c), "utf-8");
-  } catch {}
+export async function saveCheckpoint(c: PipelineCheckpoint): Promise<void> {
+  const r = redis();
+  if (r) { await r.set(KEY, JSON.stringify(c), { ex: 60 * 60 * 24 }).catch(() => {}); return; }
+  try { ensureDir(); writeFileSync(join(DIR, `${c.runId}.json`), JSON.stringify(c), "utf-8"); } catch { /* ignore */ }
 }
 
-export function deleteCheckpoint(runId: string): void {
-  try { unlinkSync(join(DIR, `${runId}.json`)); } catch {}
+export async function deleteCheckpoint(runId: string): Promise<void> {
+  const r = redis();
+  if (r) { await r.del(KEY).catch(() => {}); return; }
+  try { unlinkSync(join(DIR, `${runId}.json`)); } catch { /* ignore */ }
 }
 
-export function findLatestCheckpoint(): PipelineCheckpoint | null {
+export async function findLatestCheckpoint(): Promise<PipelineCheckpoint | null> {
+  const r = redis();
+  if (r) {
+    const raw = await r.get<any>(KEY).catch(() => null);
+    if (!raw) return null;
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  }
   try {
     ensureDir();
     const checkpoints = readdirSync(DIR)

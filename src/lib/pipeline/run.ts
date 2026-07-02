@@ -30,9 +30,10 @@ import { scoreArticleRelevance } from "@/lib/extract/relevance";
 import { computeScore } from "@/lib/score";
 import { runLearningPhase } from "@/lib/learn";
 import { generateDiscoveryQueries } from "@/lib/pipeline/queries";
-import { createPipelineController } from "@/lib/pipeline/abort";
-import { startBuffer, pushEvent, finishBuffer } from "@/lib/pipeline/eventBuffer";
+import { createPipelineController, clearStop, isStopRequested } from "@/lib/pipeline/abort";
+import { startBuffer, pushEvent, finishBuffer, snapshotBuffer } from "@/lib/pipeline/eventBuffer";
 import { saveCheckpoint, deleteCheckpoint, type PipelineCheckpoint } from "@/lib/pipeline/checkpoint";
+import { qstashPublish, isServerless } from "@/lib/qstash";
 import type { SeedTool } from "@/lib/types";
 
 export interface PipelineProgress {
@@ -63,10 +64,23 @@ export interface DiscoveryOptions {
 export async function runDiscoveryPipeline(onProgress?: ProgressCallback, options?: DiscoveryOptions): Promise<{ runId: string; stats: Record<string, number> }> {
   const controller = createPipelineController();
   const signal = controller.signal;
+  await clearStop(); // clear any stale durable stop flag from a prior run
 
   const run = await createPipelineRun("full");
   startBuffer(run.id);
   const stats: Record<string, number> = { hitsDiscovered: 0, processed: 0, authors: 0, errors: 0 };
+
+  // Time budget: on Vercel, stop before the 300s function limit and hand off to a fresh
+  // invocation via QStash (resume). Locally there's no limit, so run to completion.
+  const deadline = isServerless() ? Date.now() + 210_000 : Infinity;
+  const timeUp = () => Date.now() > deadline;
+
+  // Bridge a durable Stop (set on any instance) to the local controller, and mirror the
+  // buffer to Redis for cross-instance progress + heartbeat.
+  const hb = setInterval(() => {
+    void snapshotBuffer();
+    void isStopRequested().then((s) => { if (s && !signal.aborted) controller.abort("user stopped"); });
+  }, 2500);
 
   const emit = (stage: string, message: string, extra?: Partial<PipelineProgress>) => {
     const ev = { stage, message, ...stats, ...extra };
@@ -105,7 +119,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     const resume = options?.resume;
     const isResuming = !!resume;
-    if (resume?.oldRunId) deleteCheckpoint(resume.oldRunId);
+    if (resume?.oldRunId) await deleteCheckpoint(resume.oldRunId);
     if (isResuming) {
       emit("discover", `Resuming from round ${resume.round} — ${resume.usedQueries.length} queries already done, skipping completed work`);
     }
@@ -144,7 +158,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       });
       await queue.onIdle();
       if (signal.aborted) { emit("stopped", `Pipeline stopped by user.`); finishBuffer(); await finishPipelineRun(run.id, "completed", { ...stats, stopped: 1 }); return { runId: run.id, stats }; }
-      saveCheckpoint({ runId: run.id, round: 0, usedQueries: [], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+      await saveCheckpoint({ runId: run.id, round: 0, usedQueries: [], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
     } else if (resume?.rssComplete) {
       harvLog("rss", "Skipping RSS — already completed before interruption");
     }
@@ -165,7 +179,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     const { supabaseAdmin } = await import("@/lib/db/supabase");
 
     const MIN_NEW_PER_ROUND = 15; // stop if a round yields fewer than this
-    while (round < MAX_QUERY_ROUNDS && !signal.aborted) {
+    while (round < MAX_QUERY_ROUNDS && !signal.aborted && !timeUp()) {
       // Count new pending hits so far
       const { count: pendingCount } = await supabaseAdmin
         .from("discovery_hits")
@@ -321,7 +335,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       const roundNewHits = stats.hitsDiscovered - hitsAtRoundStart;
 
       // Save checkpoint after every round so we can resume if interrupted
-      saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+      await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
 
       if (round > 1 && roundNewHits < MIN_NEW_PER_ROUND) {
         emit("discover", `Round ${round} yielded only ${roundNewHits} new articles — diminishing returns, stopping discovery early`);
@@ -395,10 +409,27 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     // This keeps at most BATCH_SIZE closures (+ their HTML) live in memory at once,
     // instead of all 5000 at once.
     for (let i = 0; i < allHits.length; i += BATCH_SIZE) {
-      if (signal.aborted) break;
+      if (signal.aborted || timeUp()) break;
       const batch = allHits.slice(i, i + BATCH_SIZE);
       for (const hit of batch) processOnce(hit);
       await processQueue.onIdle();
+    }
+
+    // Vercel time budget hit with work still to profile → hand off to a fresh invocation via
+    // QStash (resume). Skip campaign-linking/learning this chunk; the final chunk does them.
+    if (isServerless() && timeUp() && !signal.aborted) {
+      const { count: stillPending } = await supabaseAdmin
+        .from("discovery_hits").select("id", { count: "exact", head: true }).eq("processed", false);
+      if ((stillPending ?? 0) > 0) {
+        await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+        const handed = await qstashPublish("/api/discover", { resume: true, auto: true });
+        emit(handed ? "process" : "complete", handed
+          ? `Time budget reached — ${stillPending} articles remaining, continuing in a new run…`
+          : `Time budget reached — ${stillPending} remaining. Click Resume to continue.`);
+        finishBuffer();
+        await finishPipelineRun(run.id, "completed", { ...stats, continued: handed ? 1 : 0 });
+        return { runId: run.id, stats };
+      }
     }
 
     // stats.authors is a per-hit tally (inflated: one author writes many articles).
@@ -469,7 +500,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     }
 
     emit("complete", `All done! ${stats.processed} articles processed, ${stats.authors} author profiles built, ${stats.hitsDiscovered} total hits.`);
-    deleteCheckpoint(run.id); // clean up — no need to resume a successful run
+    await deleteCheckpoint(run.id); // clean up — no need to resume a successful run
     finishBuffer();
     await finishPipelineRun(run.id, "completed", stats);
   } catch (e: any) {
@@ -477,6 +508,8 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     await finishPipelineRun(run.id, "failed", stats, e?.message);
     throw e;
   } finally {
+    clearInterval(hb);
+    await snapshotBuffer().catch(() => {});
     // Always shut down the headless browser so it doesn't linger between runs
     await closeSharedBrowser();
   }
