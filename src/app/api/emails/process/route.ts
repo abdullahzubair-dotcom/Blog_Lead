@@ -1,0 +1,92 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getDueEmails, updateOutreachEmail, getSendConfigOrDefault } from "@/lib/db/queries";
+import { sendEmail } from "@/lib/email/smtp";
+import { acquireLock, releaseLock, incrDailyCount, getDailyCount } from "@/lib/redis";
+import { auth } from "@auth";
+
+export const maxDuration = 300;
+
+const LOCK_KEY = "lock:emails:process";
+
+// Authorized if: no CRON_SECRET configured (local dev), OR the trigger's Bearer token /
+// ?key= matches (Vercel cron AND Upstash QStash both send this), OR a valid app session
+// (the manual "process now" button).
+async function authorized(req: NextRequest): Promise<boolean> {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true;
+  const header = req.headers.get("authorization");
+  if (header === `Bearer ${secret}`) return true;
+  if (req.nextUrl.searchParams.get("key") === secret) return true;
+  const session = await auth().catch(() => null);
+  return !!session;
+}
+
+// Sends any scheduled emails whose time has arrived. Any trigger can call this (Vercel cron
+// once/day on Hobby, or Upstash QStash every ~30 min for timezone-accurate delivery). A
+// Redis lock ensures overlapping triggers never double-send, and a per-workflow daily
+// counter enforces the daily cap durably across serverless instances.
+export async function POST(req: NextRequest) {
+  if (!(await authorized(req))) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const lockToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const got = await acquireLock(LOCK_KEY, 290, lockToken);
+  if (!got) {
+    return NextResponse.json({ skipped: "another send run is in progress" });
+  }
+
+  const day = new Date().toISOString().slice(0, 10); // UTC date bucket for the daily cap
+  const configCache = new Map<string, Awaited<ReturnType<typeof getSendConfigOrDefault>>>();
+  const configFor = async (workflowId: string) => {
+    if (!configCache.has(workflowId)) configCache.set(workflowId, await getSendConfigOrDefault(workflowId));
+    return configCache.get(workflowId)!;
+  };
+
+  let sent = 0, failed = 0, cappedSkipped = 0;
+  const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+
+  try {
+    const due = await getDueEmails(50);
+
+    for (const email of due) {
+      if (!email.recipient) {
+        await updateOutreachEmail(email.id, { status: "failed", error: "No recipient email address" });
+        failed++; results.push({ id: email.id, ok: false, error: "no recipient" });
+        continue;
+      }
+
+      const config = await configFor(email.workflow_id);
+
+      // Durable daily-cap guard (schedule already spaces per day; this is the safety net).
+      const already = await getDailyCount(email.workflow_id, day);
+      if (already >= config.daily_cap) { cappedSkipped++; continue; }
+
+      const res = await sendEmail({
+        to: email.recipient,
+        subject: email.subject ?? "(no subject)",
+        body: email.body ?? "",
+        fromName: config.from_name || undefined,
+        fromEmail: config.from_email || undefined,
+      });
+
+      if (res.ok) {
+        await updateOutreachEmail(email.id, { status: "sent", sent_at: new Date().toISOString(), error: undefined });
+        await incrDailyCount(email.workflow_id, day);
+        sent++; results.push({ id: email.id, ok: true });
+      } else {
+        await updateOutreachEmail(email.id, { status: "failed", error: res.error });
+        failed++; results.push({ id: email.id, ok: false, error: res.error });
+      }
+    }
+
+    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, results });
+  } finally {
+    await releaseLock(LOCK_KEY, lockToken);
+  }
+}
+
+// Vercel cron / QStash may issue GET — support both.
+export async function GET(req: NextRequest) {
+  return POST(req);
+}

@@ -19,7 +19,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@auth": ["./auth"],
+      "@config/*": ["./config/*"]
     }
   },
   "include": [

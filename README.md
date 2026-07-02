@@ -1,36 +1,95 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GenAI Scout
 
-## Getting Started
+A **$0 AI writer sourcing engine** that automatically discovers and profiles every blogger, journalist, and publisher who covers generative AI tools — and turns them into a ranked, browsable, exportable contact database for editorial outreach.
 
-First, run the development server:
+## What it does
+
+- **Discovers** writers via GDELT, Hacker News, Reddit, RSS/sitemaps, WordPress REST API, Ghost CMS, Common Crawl, and Wayback Machine
+- **Profiles** each author: avatar, bio, role, publication, contact surfaces (email, author page, Twitter, LinkedIn)
+- **Scores** prospects 0-100 by relevance, freshness, authority, competitor overlap, and contact confidence
+- **Flags link-gap opportunities**: authors covering Kling/Runway/Midjourney who have not mentioned ImagineArt yet
+- **Exports** as CSV/JSON for outreach
+
+## Prerequisites
+
+- Node.js 18+
+- A free Supabase project (supabase.com)
+- A Google Cloud OAuth 2.0 client (for @imagine.art login)
+
+---
+
+## Setup
+
+### 1. Install dependencies
+
+```bash
+cd genai-scout
+npm install
+npx playwright install chromium
+```
+
+### 2. Run SQL migration
+
+In Supabase dashboard -> SQL Editor -> New query, paste migrations/001_initial.sql and run it.
+
+### 3. Set environment variables
+
+```bash
+cp .env.example .env.local
+```
+
+Fill in .env.local (see .env.example for all variables). The only required ones are:
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
+- AUTH_SECRET (run: openssl rand -base64 32)
+- GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
+- ALLOWED_DOMAINS=imagine.art
+
+### 4. Google OAuth
+
+Go to console.cloud.google.com -> APIs & Services -> Credentials -> Create OAuth 2.0 Client ID.
+Add http://localhost:3000/api/auth/callback/google as an authorised redirect URI.
+
+### 5. Start
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Visit http://localhost:3000, sign in with your @imagine.art Google account, click Run discovery.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Architecture
 
-## Learn More
+```
+/src/lib/harvesters/    8 discovery sources (GDELT, HN, Reddit, RSS, WordPress, Ghost, CC, Wayback)
+/src/lib/extract/       fetch, metadata (JSON-LD/OG), readability, contacts, mentions, archetype
+/src/lib/score/         composite scoring (relevance 35%, competitor 20%, authority 20%, freshness 15%, contact 10%)
+/src/lib/pipeline/      orchestrator: discover -> canonicalize -> fetch -> extract -> score
+/src/app/page.tsx       main dashboard
+/src/app/admin/         seed editor, harvester toggles, suppression list, pipeline logs
+/src/app/settings/      API key status
+/migrations/001_initial.sql   full Supabase schema
+/config/seeds.ts        tool list + query archetypes
+/auth.ts                NextAuth v5 (Google OAuth, domain restriction)
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Scoring
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Signal | Weight | Method |
+|---|---|---|
+| Relevance | 35% | Tool mention density + archetype bonus (listicle/comparison +15pts) |
+| Competitor overlap | 20% | Competitor tools mentioned without ImagineArt |
+| Authority | 20% | Article count + cross-query presence |
+| Freshness | 15% | Recency decay over 180 days |
+| Contact confidence | 10% | Best published contact surface found |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Vercel deployment
 
-## Deploy on Vercel
+Set PLAYWRIGHT_ENABLED= (empty) on Vercel. The app falls back to static fetching (covers ~85% of sites). Add the Vercel URL as an OAuth redirect URI in Google Cloud Console.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Cost
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Everything used is free: Supabase free tier, GDELT open API, HN Algolia open API, Reddit JSON, Common Crawl, Wayback Machine, Vercel hobby tier. Total: $0.
