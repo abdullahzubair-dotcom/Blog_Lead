@@ -108,19 +108,32 @@ export function doneCount(): number {
 
 // ─── Redis mirror (durable across serverless instances) ─────────────────────────
 
+// If a snapshot claims running=true but its heartbeat is older than this, the run's process
+// died (recompile / function killed / crash) without finishing — treat it as NOT running so
+// the UI stops showing a stuck run and a new run can start. The live loop snapshots every 2.5s.
+const STALE_MS = 60_000;
+
 export async function snapshotToRedis(): Promise<void> {
   const r = redis();
   const snap = getEnrich();
   if (!r || !snap) return;
-  await r.set(SNAP_KEY, JSON.stringify(snap), { ex: TTL }).catch(() => {});
+  await r.set(SNAP_KEY, JSON.stringify({ ...snap, heartbeat: Date.now() }), { ex: TTL }).catch(() => {});
 }
 
 // Durable read for the status endpoint: prefer Redis (any instance), fall back to memory.
+// A "running" snapshot with a stale heartbeat is reported as finished (orphaned run).
 export async function getEnrichDurable(): Promise<(Omit<EnrichRun, "people"> & { people: EnrichPerson[] }) | null> {
   const r = redis();
   if (r) {
     const raw = await r.get<any>(SNAP_KEY).catch(() => null);
-    if (raw) return typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (raw) {
+      const s = typeof raw === "string" ? JSON.parse(raw) : raw;
+      // Orphaned if running but heartbeat is missing (old/dead writer) or stale (>60s).
+      if (s.running && (typeof s.heartbeat !== "number" || Date.now() - s.heartbeat > STALE_MS)) {
+        s.running = false;
+      }
+      return s;
+    }
   }
   return getEnrich();
 }
