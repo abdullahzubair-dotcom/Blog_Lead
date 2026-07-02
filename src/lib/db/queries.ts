@@ -966,6 +966,17 @@ export async function toggleWorkflowProspect(workflowId: string, authorId: strin
   if (error) throw error;
 }
 
+// Bulk set included for many (or all) prospects in a workflow in ONE request — used by
+// Select all / Deselect all so it doesn't fire a PATCH per prospect.
+export async function setWorkflowProspectsIncluded(
+  workflowId: string, included: boolean, authorIds?: string[],
+): Promise<void> {
+  let q = supabaseAdmin.from("workflow_prospects").update({ included }).eq("workflow_id", workflowId);
+  if (authorIds && authorIds.length) q = q.in("author_id", authorIds) as any;
+  const { error } = await q;
+  if (error) throw error;
+}
+
 // Run workflow filters against campaign authors (or all authors if no campaign)
 export async function runWorkflowFilters(
   filters: WorkflowFilters,

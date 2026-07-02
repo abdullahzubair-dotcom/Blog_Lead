@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Search,
@@ -15,7 +15,9 @@ import {
   Mail,
   Send,
   AtSign,
+  Loader2,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -29,6 +31,14 @@ const NAV = [
   { name: "Admin", href: "/admin", icon: Rocket },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
+
+// Swaps the nav icon for a spinner while THIS link's navigation is in flight — instant
+// feedback on click. Must be rendered inside its <Link> (useLinkStatus reads that context).
+function NavIcon({ Icon, collapsed }: { Icon: LucideIcon; collapsed: boolean }) {
+  const { pending } = useLinkStatus();
+  const cls = cn("h-4 w-4 shrink-0", !collapsed && "mr-3");
+  return pending ? <Loader2 className={cn(cls, "animate-spin")} /> : <Icon className={cls} />;
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -101,8 +111,9 @@ export function Sidebar() {
                       : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                     collapsed && "justify-center px-2",
                   )}
+                  onClick={() => setMobileOpen(false)}
                 >
-                  <item.icon className={cn("h-4 w-4 shrink-0", !collapsed && "mr-3")} />
+                  <NavIcon Icon={item.icon} collapsed={collapsed} />
                   {!collapsed && <span>{item.name}</span>}
                 </Link>
               );

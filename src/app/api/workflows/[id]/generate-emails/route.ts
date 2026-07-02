@@ -14,36 +14,60 @@ function fmtDate(iso?: string): string {
   catch { return ""; }
 }
 
-// Remove em/en dashes and other "AI tells", normalize whitespace.
+// Remove em/en dashes and other "AI tells"; normalize spacing WITHOUT flattening paragraphs
+// (keep single/double newlines so the email keeps its structure).
 function sanitize(text: string): string {
   return text
     .replace(/\s*[—–]\s*/g, ", ")   // em/en dash → comma
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")     // collapse runs of spaces/tabs only (not newlines)
     .replace(/ ,/g, ",")
+    .replace(/[ \t]+\n/g, "\n")     // trim trailing spaces on each line
+    .replace(/\n{3,}/g, "\n\n")     // cap blank lines at one
     .trim();
+}
+
+// Free-mail hosts aren't a "publication" — "your readers at gmail.com" reads wrong.
+const FREE_MAIL = new Set(["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "protonmail.com", "aol.com", "me.com", "live.com", "msn.com"]);
+function cleanPubName(pub: string): string {
+  return FREE_MAIL.has((pub ?? "").toLowerCase().replace(/^www\./, "")) ? "your work" : pub;
+}
+
+// An email must NEVER ship with a literal placeholder the model invented.
+function hasPlaceholder(s: string): boolean {
+  return /\[[^\]]{1,40}\]/.test(s) || /\{\{[^}]+\}\}/.test(s);
 }
 
 async function generateOpener(authorName: string, pubName: string, articles: OpenerArticle[], tools: string[], guidance?: string): Promise<string> {
   const sorted = [...articles].sort((a, b) => (b.published_at ?? "").localeCompare(a.published_at ?? ""));
   const lead = sorted[0];
-  const leadTitle = lead?.title ?? "";
+  const leadTitle = (lead?.title ?? "").trim();
   const leadDate = fmtDate(lead?.published_at);
-  const leadTopic = (lead?.excerpt ?? lead?.readability_text_excerpt ?? "").slice(0, 300);
+  const leadTopic = (lead?.excerpt ?? lead?.readability_text_excerpt ?? "").slice(0, 300).trim();
   const toolList = tools.slice(0, 3).join(", ");
+  const hasContent = !!(leadTitle || leadTopic);
 
-  const prompt = `Write the opening 1-2 sentences of a personalized outreach email to ${authorName}, a writer at ${pubName}.
+  // A safe, specific-free opener used whenever we can't (or shouldn't) fabricate specifics —
+  // no AI key, no real article content, or the model returned placeholder junk.
+  const fallback = leadTitle
+    ? `I really enjoyed your recent piece, "${leadTitle}".`
+    : `I've been following your writing${pubName && pubName !== "your work" ? ` at ${pubName}` : ""} and really enjoy it.`;
 
-Their most recent article:
-- Title: ${leadTitle || "(unknown)"}
+  if (!OPENROUTER_KEY || !hasContent) return fallback;
+
+  const prompt = `Write the opening 1-2 sentences of a COLD outreach email to ${authorName}, a writer at ${pubName}.
+
+What we actually know about them:
+- Article title: ${leadTitle || "(unknown)"}
 ${leadDate ? `- Published: ${leadDate}` : ""}
 ${leadTopic ? `- About: ${leadTopic}` : ""}
-${toolList ? `They cover: ${toolList}.` : ""}
+${toolList ? `- They cover: ${toolList}` : ""}
 
-HARD RULES (must follow all):
-- NEVER use em-dashes or en-dashes (— –). Use commas or periods only.
-- Reference their specific article naturally. Sound like a real person, not salesy or flattering.
-- Keep it SHORT and punchy. No greeting, no sign-off. Plain text, no markdown.
-- Default to 1-2 short sentences unless the direction below says otherwise.${guidance ? `\n\nSENDER'S WRITING DIRECTION (obey this exactly, including any length/word limit):\n${guidance}` : ""}`;
+HARD RULES (follow ALL):
+- NEVER output bracketed placeholders like [topic], [name], [specific point], [publication]. Only mention details explicitly listed above; if a detail isn't given, DON'T reference it.
+- This is a first-ever cold email. Do NOT imply prior contact or use "Re:".
+- NEVER use em-dashes or en-dashes (— –). Commas or periods only.
+- Sound like a real person. Not salesy, not fawning. SHORT and punchy, 1-2 sentences.
+- No greeting, no sign-off, plain text, no markdown.${guidance ? `\n\nSENDER'S WRITING DIRECTION (obey exactly, including any length/word limit):\n${guidance}` : ""}`;
 
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -58,7 +82,9 @@ HARD RULES (must follow all):
   });
   if (!res.ok) throw new Error(`OpenRouter ${res.status}`);
   const data = await res.json();
-  return sanitize(data.choices?.[0]?.message?.content?.trim() ?? "");
+  const out = sanitize(data.choices?.[0]?.message?.content?.trim() ?? "");
+  // Guard: if the model still slipped in a placeholder or returned nothing, use the fallback.
+  return (!out || hasPlaceholder(out)) ? fallback : out;
 }
 
 function fillTemplate(template: string, vars: Record<string, string>): string {
@@ -80,16 +106,14 @@ async function runGeneration(workflowId: string, templateId?: string) {
     const batch = included.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(async (p) => {
       const author = p.author!;
-      const pubName = p.domain?.name ?? p.domain?.host ?? "your publication";
+      const pubName = cleanPubName(p.domain?.name ?? p.domain?.host ?? "your work");
       const tools = (p.articles ?? [])
         .flatMap((a: any) => (a.mentions ?? []).map((m: any) => m.tool_name))
         .filter((v: string, idx: number, arr: string[]) => arr.indexOf(v) === idx)
         .slice(0, 5);
 
       try {
-        const opener = OPENROUTER_KEY
-          ? await generateOpener(author.full_name, pubName, p.articles ?? [], tools, template?.guidance)
-          : `I came across your work at ${pubName} and found it really insightful.`;
+        const opener = await generateOpener(author.full_name, pubName, p.articles ?? [], tools, template?.guidance);
 
         const firstArticle = [...(p.articles ?? [])].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
         const vars: Record<string, string> = {
@@ -101,8 +125,10 @@ async function runGeneration(workflowId: string, templateId?: string) {
           custom_line: opener,
         };
 
-        const subject = sanitize(fillTemplate(template?.subject ?? "Quick note on your recent piece", vars));
-        const body = sanitize(fillTemplate(template?.body ?? `Hi {{author_name}},\n\n{{custom_line}}\n\nBest,\nAbdullah`, vars));
+        // Fill template, drop any leftover unfilled {{tokens}}, and tidy whitespace.
+        const clean = (s: string) => sanitize(fillTemplate(s, vars).replace(/\{\{\w+\}\}/g, "").replace(/\n{3,}/g, "\n\n"));
+        const subject = clean(template?.subject ?? "Quick note on your recent piece");
+        const body = clean(template?.body ?? `Hi {{author_name}},\n\n{{custom_line}}\n\nBest,\nAbdullah`);
 
         await upsertOutreachEmail({ workflow_id: workflowId, author_id: p.author_id, template_id: templateId ?? undefined, subject, body, status: "ready" });
         bumpGen(workflowId);

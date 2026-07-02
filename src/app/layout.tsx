@@ -6,6 +6,7 @@ import { auth } from "@auth";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopNav } from "@/components/layout/TopNav";
 import { KeyHealthBanner } from "@/components/layout/KeyHealthBanner";
+import { RouteProgress } from "@/components/layout/RouteProgress";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
@@ -28,6 +29,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className="min-h-screen antialiased">
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
           <SessionProvider session={session}>
+            {session?.user && <RouteProgress />}
             <div className="min-h-screen flex bg-background text-foreground">
               {session?.user && <Sidebar />}
               <div className="flex-1 flex flex-col min-w-0">

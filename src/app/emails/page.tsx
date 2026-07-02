@@ -206,6 +206,17 @@ export default function EmailsPage() {
     }).catch(() => {});
   }
 
+  // Select all / Deselect all — one bulk request, not a PATCH per row.
+  async function toggleAllRows(included: boolean) {
+    if (!selectedWorkflow) return;
+    setRows((rs) => rs.map((r) => ({ ...r, included })));
+    await fetch(`/api/workflows/${selectedWorkflow.id}/prospects`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ included }),
+    }).catch(() => {});
+  }
+
   // Poll generation status; runs whether we started it this session or are resuming a
   // job that kept running while the tab was closed. Refetches rows so finished emails
   // appear immediately, and stops when the run is done.
@@ -282,7 +293,7 @@ export default function EmailsPage() {
       setTemplateForm({ name: t.name, subject: t.subject, body: t.body, guidance: t.guidance ?? "" });
     } else {
       setEditingTemplate(null);
-      setTemplateForm({ name: "", subject: "Re: your article on {{tool_mentioned}}", body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your readers at {{pub_name}} would love to hear about what we've been building.\n\nWould you be open to a quick chat or covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`, guidance: "" });
+      setTemplateForm({ name: "", subject: "Loved your recent piece on {{tool_mentioned}}", body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your audience would love to hear about what we've been building.\n\nWould you be open to a quick chat, or to covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`, guidance: "" });
       setCreatingTemplate(true);
     }
   }

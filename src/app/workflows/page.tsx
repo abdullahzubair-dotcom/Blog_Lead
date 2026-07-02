@@ -283,6 +283,17 @@ export default function WorkflowsPage() {
     });
   }
 
+  // Select all / Deselect all — ONE bulk request instead of a PATCH per prospect.
+  async function toggleAll(included: boolean) {
+    if (!selected) return;
+    setProspects((ps) => ps.map((p) => ({ ...p, included })));
+    await fetch(`/api/workflows/${selected.id}/prospects`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ included }), // no author_ids → applies to all in this workflow
+    }).catch(() => {});
+  }
+
   // Search ALL prospects server-side (same index as the Prospects page) to add individuals.
   async function runAddSearch(q: string) {
     setAddQuery(q);
@@ -488,7 +499,7 @@ export default function WorkflowsPage() {
                 disabled={prospects.length === 0}
                 onClick={() => {
                   const allIncluded = prospects.length > 0 && prospects.every((p) => p.included);
-                  prospects.forEach((p) => toggleProspect(p.author_id, !allIncluded));
+                  toggleAll(!allIncluded);
                 }}
               >
                 {prospects.length > 0 && prospects.every((p) => p.included) ? "Deselect all" : "Select all"}
