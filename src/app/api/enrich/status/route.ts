@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { getEnrich } from "@/lib/enrich/enrichBuffer";
+import { getEnrichDurable } from "@/lib/enrich/enrichBuffer";
 
-// Live progress + verbose log of the current/last email-finding run.
+// Live progress + verbose log of the current/last finding run. Reads the durable (Redis)
+// snapshot so it works even when the run executes on a different serverless instance.
 export async function GET() {
-  const run = getEnrich();
+  const run = await getEnrichDurable();
   if (!run) return NextResponse.json({ running: false, total: 0, done: 0, found: 0, bySource: {}, people: [] });
   return NextResponse.json({
     running: run.running,

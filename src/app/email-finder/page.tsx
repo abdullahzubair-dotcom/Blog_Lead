@@ -28,6 +28,7 @@ export default function EmailFinderPage() {
   const [campaignId, setCampaignId] = useState<string>("");
   const [mode, setMode] = useState<"email" | "linkedin">("email");
   const [pending, setPending] = useState<number | null>(null);
+  const [totalProspects, setTotalProspects] = useState<number>(0);
   const [status, setStatus] = useState<Status | null>(null);
   const [starting, setStarting] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -71,7 +72,10 @@ export default function EmailFinderPage() {
     if (cid) params.set("campaign_id", cid);
     if (m === "linkedin") params.set("mode", "linkedin");
     const qs = params.toString();
-    fetch(`/api/enrich/pending${qs ? `?${qs}` : ""}`).then((r) => r.json()).then((d) => setPending(d.count ?? 0)).catch(() => setPending(0));
+    fetch(`/api/enrich/pending${qs ? `?${qs}` : ""}`).then((r) => r.json()).then((d) => {
+      setPending(d.count ?? 0);
+      setTotalProspects(d.total ?? 0);
+    }).catch(() => setPending(0));
   }, []);
 
   const poll = useCallback(() => {
@@ -177,7 +181,7 @@ export default function EmailFinderPage() {
               {pending === null ? (
                 <span className="text-muted-foreground inline-flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> counting…</span>
               ) : (
-                <><span className="text-2xl font-bold text-violet-400 tabular-nums">{pending.toLocaleString()}</span> <span className="text-muted-foreground">prospects without a {mode === "linkedin" ? "LinkedIn" : "email"}</span></>
+                <><span className="text-2xl font-bold text-violet-400 tabular-nums">{pending.toLocaleString()}</span> <span className="text-muted-foreground">without a{mode === "linkedin" ? " LinkedIn" : "n email"}</span> <span className="text-muted-foreground/60">of {totalProspects.toLocaleString()} total prospects</span></>
               )}
             </p>
           </div>

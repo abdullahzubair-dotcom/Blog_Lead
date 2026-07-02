@@ -1269,6 +1269,24 @@ export async function getAuthorsNeedingLinkedin(campaignId?: string): Promise<Ar
     .map((r) => ({ id: r.id, name: r.full_name, host: r.domain!.host, publication: r.domain!.name ?? r.domain!.host }));
 }
 
+// Denominator + numerator for the Email/LinkedIn finder: how many prospects in the pool
+// (campaign, or all authors with a publication) still lack an email (or LinkedIn), of the
+// total pool. Matches the finder's own target set.
+export async function getFinderCounts(campaignId: string | undefined, mode: "email" | "linkedin"): Promise<{ total: number; needing: number }> {
+  const candidateIds = campaignId ? await getCampaignAuthorIds(campaignId) : null;
+  if (candidateIds && candidateIds.size === 0) return { total: 0, needing: 0 };
+
+  const type = mode === "linkedin" ? "linkedin" : "mailto";
+  const withContact = new Set(
+    (await fetchAllRows<{ author_id: string }>("contacts", "author_id", (q) => q.eq("type", type))).map((r) => r.author_id)
+  );
+  const rows = await fetchAllRows<{ id: string; domain: { host: string } | null }>(
+    "authors", "id, domain:domains!primary_domain_id(host)", (q) => q.not("primary_domain_id", "is", null),
+  );
+  const pool = rows.filter((r) => r.domain?.host && (!candidateIds || candidateIds.has(r.id)));
+  return { total: pool.length, needing: pool.filter((r) => !withContact.has(r.id)).length };
+}
+
 // Known (author name, email) pairs for a domain — used to infer the domain's email
 // pattern for free. Pools every author whose publication is on the SAME registrable domain
 // (www.ibm.com + research.ibm.com + newsroom.ibm.com → one ibm.com pattern) so subdomains

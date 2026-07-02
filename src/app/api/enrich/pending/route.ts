@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthorsNeedingEmail, getAuthorsNeedingLinkedin } from "@/lib/db/queries";
+import { getFinderCounts } from "@/lib/db/queries";
 
-// How many authors in this campaign (or all) still lack an email (default) or a LinkedIn.
+// How many prospects (campaign, or all) still lack an email (default) or a LinkedIn —
+// and the total pool, so the UI can show "N of M total".
 export async function GET(req: NextRequest) {
   const campaignId = req.nextUrl.searchParams.get("campaign_id") ?? undefined;
-  const mode = req.nextUrl.searchParams.get("mode");
-  const authors = mode === "linkedin"
-    ? await getAuthorsNeedingLinkedin(campaignId)
-    : await getAuthorsNeedingEmail(campaignId);
-  return NextResponse.json({ count: authors.length });
+  const mode = req.nextUrl.searchParams.get("mode") === "linkedin" ? "linkedin" : "email";
+  const { total, needing } = await getFinderCounts(campaignId, mode);
+  return NextResponse.json({ count: needing, total });
 }
