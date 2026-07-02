@@ -33,6 +33,9 @@ export async function resolveEmailCascade(
     // onIssue records a REAL provider failure (Blitz/Reoon/AI/search error) — distinct
     // from a clean "nothing found" — so the UI can say "couldn't complete" vs "no email".
     onIssue?: (detail: string) => void;
+    // onLinkedin fires when a LinkedIn URL is discovered en route to the email — the caller
+    // persists it so an email run ALSO harvests LinkedIns (even if no email is found).
+    onLinkedin?: (url: string) => void;
     patternCache: Map<string, DomainPattern | null>;
     domainVerify: Map<string, "safe" | "catch_all" | "invalid" | "unknown">;
   },
@@ -87,6 +90,10 @@ export async function resolveEmailCascade(
     if (linkedin) onStep(`found LinkedIn: ${linkedin.replace("https://", "")}`);
     else onStep(`no LinkedIn found anywhere`);
   }
+
+  // Harvest the LinkedIn regardless of whether we go on to find an email — LinkedIns are
+  // higher-hit-rate and reusable (Blitz can convert them later).
+  if (linkedin) ctx.onLinkedin?.(linkedin);
 
   // 4) LinkedIn → Blitz → email (Blitz has unlimited credits and needs exactly this)
   if (linkedin && blitzEnabled()) {

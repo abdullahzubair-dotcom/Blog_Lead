@@ -55,7 +55,24 @@ export async function enrichLoop(targets: EnrichTarget[], mode: FindMode = "emai
 
         const onStep = (detail: string) => enrichStep(a.name, detail, a.publication, a.id);
         const issues: string[] = [];
-        let r = await resolveEmailCascade(a, { onStep, onIssue: (m) => issues.push(m), patternCache, domainVerify });
+        let discoveredLinkedin: string | null = null;
+        let r = await resolveEmailCascade(a, {
+          onStep,
+          onIssue: (m) => issues.push(m),
+          onLinkedin: (url) => { discoveredLinkedin = url; },
+          patternCache,
+          domainVerify,
+        });
+
+        // The email cascade finds a LinkedIn on the way to the email — store it too, so an
+        // email run doubles as a LinkedIn harvest (kept even when no email is found).
+        if (discoveredLinkedin) {
+          onStep(`saved LinkedIn: ${(discoveredLinkedin as string).replace("https://", "")}`);
+          await upsertContact({
+            author_id: a.id, type: "linkedin", value: discoveredLinkedin,
+            confidence: 0.85, source: "linkedin-cascade", verified_syntax: true,
+          }).catch(() => {});
+        }
 
         // Final catch-all: never store a malformed or generic/role inbox, whatever the source.
         if (r) {
