@@ -473,6 +473,22 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* Keywords of the selected discovery campaign */}
+      {(() => {
+        const c = campaigns.find((c) => c.id === discoveryCampaignId);
+        if (!c) return null;
+        return (
+          <div className="flex flex-wrap items-center gap-1.5 -mt-1">
+            <span className="text-xs text-muted-foreground">Keywords for “{c.name}”:</span>
+            {c.keywords && c.keywords.length > 0
+              ? c.keywords.map((k) => (
+                  <Badge key={k} variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-normal">{k}</Badge>
+                ))
+              : <span className="text-xs text-muted-foreground/60 italic">no keywords set</span>}
+          </div>
+        );
+      })()}
+
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="overview">Overview</TabsTrigger>
