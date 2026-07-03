@@ -20,10 +20,20 @@ const BLOCKED_DOMAINS = new Set([
   "flipboard.com",
 ]);
 
-// True if this URL is a video/social/audio platform (not an article) or otherwise unfit
-// to profile as editorial content.
+// Exact hosts to block (not whole registrable domains). news.google.com serves opaque
+// redirect wrappers, not fetchable articles — profiling them yields no author, so drop them
+// (blocking by host avoids nuking legit google.com content like developers/cloud blogs).
+const BLOCKED_HOSTS = new Set([
+  "news.google.com",
+  "google.com", "www.google.com",       // search/redirect pages, not articles
+  "play.google.com", "books.google.com",
+]);
+
+// True if this URL is a video/social/audio platform, an aggregator/redirect wrapper, or
+// otherwise unfit to profile as editorial content.
 export function isBlockedUrl(url: string): boolean {
   let host: string;
-  try { host = new URL(url).hostname; } catch { return true; } // unparseable → skip
-  return BLOCKED_DOMAINS.has(registrableDomain(host));
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return true; } // unparseable → skip
+  const bare = host.replace(/^www\./, "");
+  return BLOCKED_HOSTS.has(host) || BLOCKED_HOSTS.has(bare) || BLOCKED_DOMAINS.has(registrableDomain(host));
 }
