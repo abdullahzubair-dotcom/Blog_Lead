@@ -11,11 +11,12 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { name, subject, body, guidance } = await req.json();
-    if (!name || !subject || !body) {
+    const { name, subject, body, guidance, channel } = await req.json();
+    // LinkedIn notes carry no subject line, so only require it for email templates.
+    if (!name || !body || (channel !== "linkedin" && !subject)) {
       return NextResponse.json({ error: "name, subject, body required" }, { status: 400 });
     }
-    const tmpl = await createEmailTemplate({ name, subject, body, guidance });
+    const tmpl = await createEmailTemplate({ name, subject: subject ?? "", body, guidance, channel });
     return NextResponse.json(tmpl, { status: 201 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

@@ -216,6 +216,18 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   guidance?: string; // optional writing direction for the AI {{custom_line}} opener
+  channel?: "email" | "linkedin"; // which outreach channel this template is for (default email)
+  created_at: string;
+  updated_at: string;
+}
+
+// A generated LinkedIn connection note for one prospect (copy-paste, not sent).
+export interface LinkedinMessage {
+  id: string;
+  workflow_id: string;
+  author_id: string;
+  template_id?: string | null;
+  body: string;
   created_at: string;
   updated_at: string;
 }

@@ -41,6 +41,7 @@ import type {
   WorkflowFilters,
   WorkflowProspect,
   EmailTemplate,
+  LinkedinMessage,
   OutreachEmail,
   EmailSendConfig,
 } from "@/lib/types";
@@ -1159,7 +1160,7 @@ export async function getEmailTemplate(id: string): Promise<EmailTemplate | null
   return data;
 }
 
-export async function createEmailTemplate(data: { name: string; subject: string; body: string; guidance?: string }): Promise<EmailTemplate> {
+export async function createEmailTemplate(data: { name: string; subject: string; body: string; guidance?: string; channel?: "email" | "linkedin" }): Promise<EmailTemplate> {
   const { data: tmpl, error } = await supabaseAdmin
     .from("email_templates")
     .insert({ ...data, updated_at: new Date().toISOString() })
@@ -1169,7 +1170,7 @@ export async function createEmailTemplate(data: { name: string; subject: string;
   return tmpl;
 }
 
-export async function updateEmailTemplate(id: string, data: { name?: string; subject?: string; body?: string; guidance?: string }): Promise<void> {
+export async function updateEmailTemplate(id: string, data: { name?: string; subject?: string; body?: string; guidance?: string; channel?: "email" | "linkedin" }): Promise<void> {
   const { error } = await supabaseAdmin
     .from("email_templates")
     .update({ ...data, updated_at: new Date().toISOString() })
@@ -1179,6 +1180,31 @@ export async function updateEmailTemplate(id: string, data: { name?: string; sub
 
 export async function deleteEmailTemplate(id: string): Promise<void> {
   const { error } = await supabaseAdmin.from("email_templates").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ─── LinkedIn Messages (generated connection notes, copy-paste — never sent) ────
+
+export async function getLinkedinMessages(workflowId: string): Promise<LinkedinMessage[]> {
+  const { data, error } = await supabaseAdmin
+    .from("linkedin_messages")
+    .select("*")
+    .eq("workflow_id", workflowId);
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Overwrite the note for one prospect (upsert on workflow_id+author_id — same shape
+// as outreach emails, so re-generating or hand-editing just replaces it).
+export async function upsertLinkedinMessage(data: {
+  workflow_id: string;
+  author_id: string;
+  template_id?: string | null;
+  body: string;
+}): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("linkedin_messages")
+    .upsert({ ...data, updated_at: new Date().toISOString() }, { onConflict: "workflow_id,author_id" });
   if (error) throw error;
 }
 

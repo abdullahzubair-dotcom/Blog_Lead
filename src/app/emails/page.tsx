@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Mail, Plus, Loader2, Sparkles, Check, AlertCircle, Edit2, FileText, Send, Clock, Search, ChevronDown, Globe } from "lucide-react";
+import { Mail, Plus, Loader2, Sparkles, Check, AlertCircle, Edit2, FileText, Send, Clock, Search, ChevronDown, Globe, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,9 +13,18 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig } from "@/lib/types";
+import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig, LinkedinMessage } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
 import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
+
+// LinkedIn brand glyph (lucide dropped brand icons). Inherits color via currentColor.
+function Linkedin({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.07 2.07 0 1 1 0-4.14 2.07 2.07 0 0 1 0 4.14zM7.12 20.45H3.55V9h3.57v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z" />
+    </svg>
+  );
+}
 
 const TIMEZONES = [
   "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
@@ -57,7 +66,17 @@ interface EmailRow {
   contacts: any[];
   included: boolean;
   email: OutreachEmail | null;
+  linkedin: LinkedinMessage | null; // generated LinkedIn connection note (copy-paste)
 }
+
+// LinkedIn note templates get a different placeholder set (no subject, short body).
+const LINKEDIN_PLACEHOLDER_DOCS = [
+  ["{{author_name}}", "Writer's full name"],
+  ["{{first_name}}", "Writer's first name"],
+  ["{{pub_name}}", "Publication name"],
+  ["{{custom_line}}", "AI-generated personalized note (already includes a greeting)"],
+];
+const LINKEDIN_LIMIT = 300; // LinkedIn's connection-note character cap
 
 function fmtDate(iso?: string): string {
   if (!iso) return "";
@@ -78,6 +97,11 @@ function emailIsGuess(contacts: any[]): boolean {
   const c = contacts?.find((c) => c.type === "mailto");
   return isGuessSource(c?.source);
 }
+function linkedinOf(contacts: any[]): string | null {
+  const c = contacts?.find((c) => c.type === "linkedin");
+  if (!c?.value) return null;
+  return /^https?:\/\//.test(c.value) ? c.value : `https://${c.value.replace(/^\/+/, "")}`;
+}
 
 export default function EmailsPage() {
   const router = useRouter();
@@ -88,6 +112,10 @@ export default function EmailsPage() {
   const [rows, setRows] = useState<EmailRow[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Channel: "email" drips personalized emails; "linkedin" generates copy-paste
+  // connection notes (never sent — you paste them into LinkedIn).
+  const [mode, setMode] = useState<"email" | "linkedin">("email");
+
   // Generation state
   const [generating, setGenerating] = useState(false);
   const [genProgress, setGenProgress] = useState({ done: 0, total: 0 });
@@ -96,7 +124,7 @@ export default function EmailsPage() {
 
   // Template editor
   const [editingTemplate, setEditingTemplate] = useState<EmailTemplate | null>(null);
-  const [templateForm, setTemplateForm] = useState({ name: "", subject: "", body: "", guidance: "" });
+  const [templateForm, setTemplateForm] = useState<{ name: string; subject: string; body: string; guidance: string; channel: "email" | "linkedin" }>({ name: "", subject: "", body: "", guidance: "", channel: "email" });
   const [creatingTemplate, setCreatingTemplate] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
 
@@ -135,17 +163,24 @@ export default function EmailsPage() {
 
   useEffect(() => {
     if (genTimer.current) { clearInterval(genTimer.current); genTimer.current = null; }
-    if (!selectedWorkflow) { setRows([]); setConfig(null); setGenerating(false); return; }
+    setGenerating(false);
+    if (!selectedWorkflow) { setRows([]); setConfig(null); return; }
     fetchRows(selectedWorkflow.id);
     fetch(`/api/workflows/${selectedWorkflow.id}/send-config`).then((r) => r.ok ? r.json() : null).then(setConfig).catch(() => {});
     fetch(`/api/outreach/contacted?exclude_workflow=${selectedWorkflow.id}`).then((r) => r.json()).then((d) => setContactedElsewhere(new Set(d.authorIds ?? []))).catch(() => {});
-    // Resume progress view if a generation is still running from before (e.g. tab was closed)
-    fetch(`/api/workflows/${selectedWorkflow.id}/generate-status`).then((r) => r.json()).then((st) => {
-      if (st?.running) { setGenerating(true); pollGen(selectedWorkflow.id); }
+    // Resume progress view if a generation for THIS channel is still running (e.g. tab was closed)
+    const q = mode === "linkedin" ? "?channel=linkedin" : "";
+    fetch(`/api/workflows/${selectedWorkflow.id}/generate-status${q}`).then((r) => r.json()).then((st) => {
+      if (st?.running) { setGenerating(true); pollGen(selectedWorkflow.id, mode); }
     }).catch(() => {});
     return () => { if (genTimer.current) { clearInterval(genTimer.current); genTimer.current = null; } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWorkflow]);
+  }, [selectedWorkflow, mode]);
+
+  // A selected template belongs to one channel — drop it when it no longer matches the mode.
+  useEffect(() => {
+    setSelectedTemplate((t) => (t && (mode === "linkedin") !== (t.channel === "linkedin") ? null : t));
+  }, [mode]);
 
   async function saveConfig() {
     if (!selectedWorkflow || !config) return;
@@ -181,14 +216,18 @@ export default function EmailsPage() {
 
   async function fetchRows(workflowId: string) {
     setLoading(true);
-    const [pRes, eRes] = await Promise.all([
+    const [pRes, eRes, lRes] = await Promise.all([
       fetch(`/api/workflows/${workflowId}/prospects?limit=500`).catch(() => null),
       fetch(`/api/workflows/${workflowId}/emails`).catch(() => null),
+      fetch(`/api/workflows/${workflowId}/linkedin`).catch(() => null),
     ]);
     const prospects: any[] = pRes?.ok ? (await pRes.json()).prospects ?? [] : [];
     const emails: OutreachEmail[] = eRes?.ok ? await eRes.json() : [];
+    const linkedins: LinkedinMessage[] = lRes?.ok ? await lRes.json() : [];
     const emailByAuthor = new Map<string, OutreachEmail>();
     for (const e of emails) emailByAuthor.set(e.author_id, e);
+    const liByAuthor = new Map<string, LinkedinMessage>();
+    for (const m of linkedins) liByAuthor.set(m.author_id, m);
 
     setRows(
       prospects.map((p) => ({
@@ -198,6 +237,7 @@ export default function EmailsPage() {
         contacts: p.contacts ?? [],
         included: p.included,
         email: emailByAuthor.get(p.author_id) ?? null,
+        linkedin: liByAuthor.get(p.author_id) ?? null,
       }))
     );
     setLoading(false);
@@ -237,10 +277,12 @@ export default function EmailsPage() {
   // Poll generation status; runs whether we started it this session or are resuming a
   // job that kept running while the tab was closed. Refetches rows so finished emails
   // appear immediately, and stops when the run is done.
-  const pollGen = useCallback((workflowId: string) => {
+  const pollGen = useCallback((workflowId: string, channel: "email" | "linkedin") => {
     if (genTimer.current) clearInterval(genTimer.current);
+    const q = channel === "linkedin" ? "?channel=linkedin" : "";
+    const noun = channel === "linkedin" ? "LinkedIn notes" : "emails";
     const tick = async () => {
-      const st = await fetch(`/api/workflows/${workflowId}/generate-status`).then((r) => r.json()).catch(() => null);
+      const st = await fetch(`/api/workflows/${workflowId}/generate-status${q}`).then((r) => r.json()).catch(() => null);
       if (!st) return;
       setGenProgress({ done: st.done, total: st.total });
       setGenErrors(st.errors ?? []);
@@ -248,7 +290,7 @@ export default function EmailsPage() {
       if (!st.running) {
         if (genTimer.current) { clearInterval(genTimer.current); genTimer.current = null; }
         setGenerating(false);
-        if (st.total > 0) toast.success(`Generated ${st.done} emails${st.errors?.length ? `, ${st.errors.length} errors` : ""}.`);
+        if (st.total > 0) toast.success(`Generated ${st.done} ${noun}${st.errors?.length ? `, ${st.errors.length} errors` : ""}.`);
       }
     };
     tick();
@@ -264,7 +306,8 @@ export default function EmailsPage() {
     setGenProgress({ done: 0, total: includedCount });
     setGenErrors([]);
 
-    const res = await fetch(`/api/workflows/${selectedWorkflow.id}/generate-emails`, {
+    const endpoint = mode === "linkedin" ? "generate-linkedin" : "generate-emails";
+    const res = await fetch(`/api/workflows/${selectedWorkflow.id}/${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ template_id: selectedTemplate?.id }),
@@ -275,7 +318,25 @@ export default function EmailsPage() {
       else { toast.error(data.reason ?? "Couldn't start generation."); setGenerating(false); return; }
     }
     // Generation now runs on the server independent of this tab. Poll for progress.
-    pollGen(selectedWorkflow.id);
+    pollGen(selectedWorkflow.id, mode);
+  }
+
+  // Copy a single LinkedIn note (or any text) to the clipboard.
+  async function copyText(text: string, label = "Note") {
+    try { await navigator.clipboard.writeText(text); toast.success(`${label} copied.`); }
+    catch { toast.error("Couldn't copy — select and copy manually."); }
+  }
+
+  // Copy every generated note for included prospects as a labelled list (bulk paste helper).
+  async function copyAllNotes() {
+    const blocks = rows
+      .filter((r) => r.included && !contactedElsewhere.has(r.author_id) && r.linkedin?.body)
+      .map((r) => {
+        const url = linkedinOf(r.contacts);
+        return `${r.author?.full_name ?? "Unknown"}${url ? ` — ${url}` : ""}\n${r.linkedin!.body}`;
+      });
+    if (blocks.length === 0) { toast.error("No generated notes to copy yet."); return; }
+    await copyText(blocks.join("\n\n———\n\n"), `${blocks.length} notes`);
   }
 
   async function saveTemplate() {
@@ -307,23 +368,61 @@ export default function EmailsPage() {
   function openTemplateEditor(t?: EmailTemplate) {
     if (t) {
       setEditingTemplate(t);
-      setTemplateForm({ name: t.name, subject: t.subject, body: t.body, guidance: t.guidance ?? "" });
+      setTemplateForm({ name: t.name, subject: t.subject, body: t.body, guidance: t.guidance ?? "", channel: t.channel === "linkedin" ? "linkedin" : "email" });
     } else {
       setEditingTemplate(null);
-      setTemplateForm({ name: "", subject: "Loved your recent piece on {{tool_mentioned}}", body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your audience would love to hear about what we've been building.\n\nWould you be open to a quick chat, or to covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`, guidance: "" });
+      // New templates default to the current channel.
+      if (mode === "linkedin") {
+        setTemplateForm({
+          name: "",
+          subject: "",
+          body: "{{custom_line}}", // the note already includes a greeting; add a line if you want
+          guidance: "",
+          channel: "linkedin",
+        });
+      } else {
+        setTemplateForm({
+          name: "",
+          subject: "Loved your recent piece on {{tool_mentioned}}",
+          body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your audience would love to hear about what we've been building.\n\nWould you be open to a quick chat, or to covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`,
+          guidance: "",
+          channel: "email",
+        });
+      }
       setCreatingTemplate(true);
     }
   }
 
   function openEmailEditor(row: EmailRow) {
-    if (!row.email) return;
-    setEditingRow(row);
-    setEditForm({ subject: row.email.subject ?? "", body: row.email.body ?? "" });
+    if (mode === "linkedin") {
+      if (!row.linkedin) return;
+      setEditingRow(row);
+      setEditForm({ subject: "", body: row.linkedin.body ?? "" });
+    } else {
+      if (!row.email) return;
+      setEditingRow(row);
+      setEditForm({ subject: row.email.subject ?? "", body: row.email.body ?? "" });
+    }
   }
 
   async function saveEmail() {
-    if (!editingRow?.email) return;
+    if (!editingRow || !selectedWorkflow) return;
     setSavingEmail(true);
+    if (mode === "linkedin") {
+      await fetch(`/api/workflows/${selectedWorkflow.id}/linkedin`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ author_id: editingRow.author_id, body: editForm.body }),
+      });
+      setRows((rs) => rs.map((r) => r.author_id === editingRow.author_id && r.linkedin
+        ? { ...r, linkedin: { ...r.linkedin, body: editForm.body } }
+        : r));
+      setEditingRow(null);
+      setSavingEmail(false);
+      toast.success("Note saved.");
+      return;
+    }
+    if (!editingRow.email) { setSavingEmail(false); return; }
     const emailId = editingRow.email.id;
     await fetch(`/api/emails/${emailId}`, {
       method: "PATCH",
@@ -339,6 +438,8 @@ export default function EmailsPage() {
   }
 
   const includedRows = rows.filter((r) => r.included);
+  // Templates are per-channel — only show the ones for the active mode.
+  const channelTemplates = templates.filter((t) => (mode === "linkedin") === (t.channel === "linkedin"));
   // Match what "Send All" actually schedules: included + not contacted elsewhere + has a real
   // email + status ready/scheduled. (Old count included "sent" and ignored these filters.)
   const readyCount = rows.filter((r) =>
@@ -347,13 +448,16 @@ export default function EmailsPage() {
     !!emailOf(r.contacts) &&
     r.email && (r.email.status === "ready" || r.email.status === "scheduled")
   ).length;
+  // LinkedIn notes generated for included, not-elsewhere-contacted prospects.
+  const notedCount = rows.filter((r) => r.included && !contactedElsewhere.has(r.author_id) && r.linkedin?.body).length;
   const allIncluded = rows.length > 0 && rows.every((r) => r.included);
   const displayRows = rowSearch.trim()
     ? rows.filter((r) => {
         const q = rowSearch.toLowerCase();
         return (r.author?.full_name ?? "").toLowerCase().includes(q)
           || (emailOf(r.contacts) ?? "").toLowerCase().includes(q)
-          || (r.email?.subject ?? "").toLowerCase().includes(q);
+          || (r.email?.subject ?? "").toLowerCase().includes(q)
+          || (r.linkedin?.body ?? "").toLowerCase().includes(q);
       })
     : rows;
 
@@ -362,6 +466,24 @@ export default function EmailsPage() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Controls bar */}
         <div className="border-b border-border px-6 py-4 flex flex-wrap items-center gap-3 shrink-0">
+          {/* Channel toggle — Email drips personalized emails; LinkedIn generates copy-paste notes */}
+          <div className="inline-flex rounded-lg border border-border bg-muted/30 p-0.5 shrink-0 self-end">
+            <button
+              type="button"
+              onClick={() => setMode("email")}
+              className={`flex items-center gap-1.5 rounded-md px-3 h-8 text-sm font-medium transition-colors ${mode === "email" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Mail className="h-3.5 w-3.5" />Email
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("linkedin")}
+              className={`flex items-center gap-1.5 rounded-md px-3 h-8 text-sm font-medium transition-colors ${mode === "linkedin" ? "bg-background shadow-sm text-[#0a66c2]" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Linkedin className="h-3.5 w-3.5" />LinkedIn
+            </button>
+          </div>
+
           <div className="space-y-0.5 min-w-56 relative">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Workflow</p>
             <button
@@ -409,10 +531,10 @@ export default function EmailsPage() {
               <select
                 className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
                 value={selectedTemplate?.id ?? ""}
-                onChange={(e) => setSelectedTemplate(templates.find((t) => t.id === e.target.value) ?? null)}
+                onChange={(e) => setSelectedTemplate(channelTemplates.find((t) => t.id === e.target.value) ?? null)}
               >
-                <option value="">No template (AI-only opener)</option>
-                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                <option value="">{mode === "linkedin" ? "No template (AI note only)" : "No template (AI-only opener)"}</option>
+                {channelTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
               {selectedTemplate && (
                 <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => openTemplateEditor(selectedTemplate)}>
@@ -439,21 +561,37 @@ export default function EmailsPage() {
                 ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Generating...</>
                 : <><Sparkles className="h-3.5 w-3.5 mr-1.5" />Generate ({includedRows.length})</>}
             </Button>
-            {/* Schedule is per-user now — configured in Settings */}
-            <Button size="sm" variant="outline" onClick={() => router.push("/settings")} title="Your timezone, window & spacing (per-user)">
-              <Clock className="h-3.5 w-3.5 mr-1.5" />Schedule
-            </Button>
-            {/* Stage 3 — schedule the send (drip via SMTP) */}
-            <Button
-              size="sm"
-              onClick={scheduleSend}
-              disabled={!selectedWorkflow || scheduling || readyCount === 0}
-              className="bg-violet-600 hover:bg-violet-700 text-white gap-1.5"
-              title={readyCount === 0 ? "Generate emails first" : "Schedule all ready emails to send"}
-            >
-              {scheduling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-              Send All ({readyCount})
-            </Button>
+            {mode === "email" ? (
+              <>
+                {/* Schedule is per-user now — configured in Settings */}
+                <Button size="sm" variant="outline" onClick={() => router.push("/settings")} title="Your timezone, window & spacing (per-user)">
+                  <Clock className="h-3.5 w-3.5 mr-1.5" />Schedule
+                </Button>
+                {/* Stage 3 — schedule the send (drip via SMTP) */}
+                <Button
+                  size="sm"
+                  onClick={scheduleSend}
+                  disabled={!selectedWorkflow || scheduling || readyCount === 0}
+                  className="bg-violet-600 hover:bg-violet-700 text-white gap-1.5"
+                  title={readyCount === 0 ? "Generate emails first" : "Schedule all ready emails to send"}
+                >
+                  {scheduling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  Send All ({readyCount})
+                </Button>
+              </>
+            ) : (
+              /* LinkedIn is generate-only — no sending. Bulk-copy the notes to paste manually. */
+              <Button
+                size="sm"
+                onClick={copyAllNotes}
+                disabled={notedCount === 0}
+                className="bg-[#0a66c2] hover:bg-[#004182] text-white gap-1.5"
+                title={notedCount === 0 ? "Generate notes first" : "Copy all generated notes to paste into LinkedIn"}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                Copy all ({notedCount})
+              </Button>
+            )}
           </div>
         </div>
 
@@ -461,8 +599,17 @@ export default function EmailsPage() {
         {rows.length > 0 && (
           <div className="px-6 py-2 border-b border-border flex items-center gap-4 text-xs text-muted-foreground shrink-0">
             <span><span className="font-semibold text-foreground">{includedRows.length}</span> selected</span>
-            <span><span className="font-semibold text-green-400">{readyCount}</span> ready</span>
-            <span><span className="font-semibold text-muted-foreground">{rows.filter((r) => !r.email).length}</span> not generated</span>
+            {mode === "email" ? (
+              <>
+                <span><span className="font-semibold text-green-400">{readyCount}</span> ready</span>
+                <span><span className="font-semibold text-muted-foreground">{rows.filter((r) => !r.email).length}</span> not generated</span>
+              </>
+            ) : (
+              <>
+                <span><span className="font-semibold text-[#0a66c2]">{notedCount}</span> notes ready</span>
+                <span><span className="font-semibold text-muted-foreground">{rows.filter((r) => !r.linkedin).length}</span> not generated</span>
+              </>
+            )}
             {genErrors.length > 0 && (
               <span className="text-red-400"><AlertCircle className="h-3 w-3 inline mr-1" />{genErrors.length} errors</span>
             )}
@@ -471,7 +618,7 @@ export default function EmailsPage() {
               <input
                 value={rowSearch}
                 onChange={(e) => setRowSearch(e.target.value)}
-                placeholder="Search name, email, subject…"
+                placeholder={mode === "linkedin" ? "Search name, note…" : "Search name, email, subject…"}
                 className="w-full h-7 rounded-md border border-input bg-background pl-8 pr-2 text-xs outline-none"
               />
             </div>
@@ -488,8 +635,8 @@ export default function EmailsPage() {
         <div className="flex-1 overflow-y-auto">
           {!selectedWorkflow ? (
             <div className="flex items-center justify-center h-full text-muted-foreground flex-col gap-2">
-              <Mail className="h-8 w-8 opacity-20" />
-              <p className="text-sm">Select a workflow to personalize outreach emails</p>
+              {mode === "linkedin" ? <Linkedin className="h-8 w-8 opacity-20" /> : <Mail className="h-8 w-8 opacity-20" />}
+              <p className="text-sm">{mode === "linkedin" ? "Select a workflow to generate LinkedIn connection notes" : "Select a workflow to personalize outreach emails"}</p>
             </div>
           ) : loading ? (
             <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
@@ -505,7 +652,7 @@ export default function EmailsPage() {
                 <tr>
                   <th className="w-10 px-4 py-2.5"></th>
                   <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Author</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Their article & subject</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">{mode === "linkedin" ? "Their article & connection note" : "Their article & subject"}</th>
                   <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider w-24">Status</th>
                   <th className="px-4 py-2.5 w-16"></th>
                 </tr>
@@ -516,6 +663,9 @@ export default function EmailsPage() {
                   const lead = latestArticle(row.articles);
                   const email = emailOf(row.contacts);
                   const gen = row.email;
+                  const li = row.linkedin;
+                  const liUrl = linkedinOf(row.contacts);
+                  const isLi = mode === "linkedin";
                   const contacted = contactedElsewhere.has(row.author_id);
                   return (
                     <tr
@@ -549,7 +699,16 @@ export default function EmailsPage() {
                                 </button>
                               )}
                             </p>
-                            {email ? (
+                            {isLi ? (
+                              liUrl ? (
+                                <a href={liUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-xs truncate max-w-[200px] flex items-center gap-1 text-[#0a66c2] hover:underline" title="Open LinkedIn profile">
+                                  <Linkedin className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{liUrl.replace(/^https?:\/\/(www\.)?/, "")}</span>
+                                </a>
+                              ) : (
+                                <p className="text-xs text-muted-foreground/50 truncate max-w-[160px]">no LinkedIn on file</p>
+                              )
+                            ) : email ? (
                               <p className="text-xs truncate max-w-[200px] flex items-center gap-1">
                                 <span className={emailIsGuess(row.contacts) ? "text-amber-400/90" : "text-green-400/80"}>{email}</span>
                                 {emailIsGuess(row.contacts) && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
@@ -568,18 +727,43 @@ export default function EmailsPage() {
                             {lead.published_at && <span className="opacity-60 shrink-0">· {fmtDate(lead.published_at)}</span>}
                           </p>
                         )}
-                        <p className="truncate max-w-md text-sm">
-                          {gen?.subject || <span className="italic opacity-40 text-muted-foreground">Not generated yet</span>}
-                        </p>
+                        {isLi ? (
+                          <p className="max-w-md text-sm text-muted-foreground line-clamp-2">
+                            {li?.body || <span className="italic opacity-40">Not generated yet</span>}
+                          </p>
+                        ) : (
+                          <p className="truncate max-w-md text-sm">
+                            {gen?.subject || <span className="italic opacity-40 text-muted-foreground">Not generated yet</span>}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        <StatusBadge status={gen?.status ?? "pending"} />
+                        {isLi ? (
+                          <Badge variant="outline" className={`text-[11px] capitalize ${li?.body ? "text-[#0a66c2] border-[#0a66c2]/30 bg-[#0a66c2]/10" : "text-muted-foreground border-muted"}`}>
+                            {li?.body ? "generated" : "pending"}
+                          </Badge>
+                        ) : (
+                          <StatusBadge status={gen?.status ?? "pending"} />
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {gen?.body && (
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openEmailEditor(row)}>
-                            <Edit2 className="h-3 w-3 mr-1" />Edit
-                          </Button>
+                        {isLi ? (
+                          li?.body && (
+                            <div className="flex items-center justify-end gap-1">
+                              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => copyText(li.body, author?.full_name ? `${author.full_name}'s note` : "Note")} title="Copy note">
+                                <Copy className="h-3 w-3" />
+                              </Button>
+                              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openEmailEditor(row)}>
+                                <Edit2 className="h-3 w-3 mr-1" />Edit
+                              </Button>
+                            </div>
+                          )
+                        ) : (
+                          gen?.body && (
+                            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openEmailEditor(row)}>
+                              <Edit2 className="h-3 w-3 mr-1" />Edit
+                            </Button>
+                          )
                         )}
                       </td>
                     </tr>
@@ -595,20 +779,39 @@ export default function EmailsPage() {
       <Dialog open={!!(editingTemplate || creatingTemplate)} onOpenChange={(v) => { if (!v) { setEditingTemplate(null); setCreatingTemplate(false); } }}>
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingTemplate ? "Edit Template" : "New Email Template"}</DialogTitle>
+            <DialogTitle>
+              {editingTemplate
+                ? (templateForm.channel === "linkedin" ? "Edit LinkedIn Template" : "Edit Email Template")
+                : (templateForm.channel === "linkedin" ? "New LinkedIn Template" : "New Email Template")}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
               <Label>Template name</Label>
-              <Input placeholder="e.g. AI Tools Outreach v1" value={templateForm.name} onChange={(e) => setTemplateForm(f => ({ ...f, name: e.target.value }))} />
+              <Input placeholder={templateForm.channel === "linkedin" ? "e.g. LinkedIn connect v1" : "e.g. AI Tools Outreach v1"} value={templateForm.name} onChange={(e) => setTemplateForm(f => ({ ...f, name: e.target.value }))} />
             </div>
+            {templateForm.channel !== "linkedin" && (
+              <div className="space-y-1.5">
+                <Label>Subject line</Label>
+                <Input placeholder="e.g. Re: your article on {{tool_mentioned}}" value={templateForm.subject} onChange={(e) => setTemplateForm(f => ({ ...f, subject: e.target.value }))} />
+              </div>
+            )}
             <div className="space-y-1.5">
-              <Label>Subject line</Label>
-              <Input placeholder="e.g. Re: your article on {{tool_mentioned}}" value={templateForm.subject} onChange={(e) => setTemplateForm(f => ({ ...f, subject: e.target.value }))} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Email body</Label>
-              <Textarea placeholder="Hi {{author_name}},&#10;&#10;{{custom_line}}&#10;..." className="min-h-[200px] font-mono text-sm" value={templateForm.body} onChange={(e) => setTemplateForm(f => ({ ...f, body: e.target.value }))} />
+              <Label className="flex items-center justify-between">
+                <span>{templateForm.channel === "linkedin" ? "Connection note" : "Email body"}</span>
+                {templateForm.channel === "linkedin" && (
+                  <span className={`text-xs font-normal ${templateForm.body.length > LINKEDIN_LIMIT ? "text-red-400" : "text-muted-foreground"}`}>{templateForm.body.length}/{LINKEDIN_LIMIT}</span>
+                )}
+              </Label>
+              <Textarea
+                placeholder={templateForm.channel === "linkedin" ? "{{custom_line}}" : "Hi {{author_name}},&#10;&#10;{{custom_line}}&#10;..."}
+                className={`${templateForm.channel === "linkedin" ? "min-h-[120px]" : "min-h-[200px]"} font-mono text-sm`}
+                value={templateForm.body}
+                onChange={(e) => setTemplateForm(f => ({ ...f, body: e.target.value }))}
+              />
+              {templateForm.channel === "linkedin" && (
+                <p className="text-xs text-muted-foreground">Keep it under {LINKEDIN_LIMIT} characters (LinkedIn's limit). Leave as just {"{{custom_line}}"} to send the AI note verbatim, or wrap it with your own words.</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="flex items-center gap-1.5">
@@ -616,19 +819,21 @@ export default function EmailsPage() {
                 Writing direction for {"{{custom_line}}"} <span className="text-muted-foreground font-normal">(optional)</span>
               </Label>
               <Textarea
-                placeholder="e.g. Keep it casual and concise. Lead with genuine curiosity about their take on AI video tools. Mention we're a small team, not a big corp. Avoid buzzwords."
+                placeholder={templateForm.channel === "linkedin"
+                  ? "e.g. Very warm and brief. Mention one specific thing from their article. No hard pitch — just a genuine reason to connect."
+                  : "e.g. Keep it casual and concise. Lead with genuine curiosity about their take on AI video tools. Mention we're a small team, not a big corp. Avoid buzzwords."}
                 className="min-h-[90px] text-sm"
                 value={templateForm.guidance}
                 onChange={(e) => setTemplateForm(f => ({ ...f, guidance: e.target.value }))}
               />
               <p className="text-xs text-muted-foreground">
-                Steers how the AI writes each personalized opener — tone, angle, what to emphasize or avoid. Applied per-recipient on top of their article context.
+                Steers how the AI writes each personalized {templateForm.channel === "linkedin" ? "note" : "opener"} — tone, angle, what to emphasize or avoid. Applied per-recipient on top of their article context.
               </p>
             </div>
             <div className="bg-muted/30 rounded-lg p-3 space-y-1.5">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Available placeholders</p>
               <div className="grid grid-cols-2 gap-1">
-                {PLACEHOLDER_DOCS.map(([token, desc]) => (
+                {(templateForm.channel === "linkedin" ? LINKEDIN_PLACEHOLDER_DOCS : PLACEHOLDER_DOCS).map(([token, desc]) => (
                   <div key={token} className="flex gap-2 text-xs">
                     <code className="text-violet-400 shrink-0">{token}</code>
                     <span className="text-muted-foreground">{desc}</span>
@@ -639,7 +844,7 @@ export default function EmailsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setEditingTemplate(null); setCreatingTemplate(false); }}>Cancel</Button>
-            <Button onClick={saveTemplate} disabled={!templateForm.name || !templateForm.subject || !templateForm.body || savingTemplate}>
+            <Button onClick={saveTemplate} disabled={!templateForm.name || !templateForm.body || (templateForm.channel !== "linkedin" && !templateForm.subject) || savingTemplate}>
               {savingTemplate && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Save Template
             </Button>
@@ -651,11 +856,13 @@ export default function EmailsPage() {
       <Sheet open={!!editingRow} onOpenChange={(v) => { if (!v) setEditingRow(null); }}>
         <SheetContent side="right" className="w-full sm:max-w-xl flex flex-col p-0 gap-0 overflow-hidden">
           <SheetHeader className="px-6 py-4 border-b border-border shrink-0">
-            <SheetTitle>Edit Email</SheetTitle>
+            <SheetTitle>{mode === "linkedin" ? "Edit LinkedIn note" : "Edit Email"}</SheetTitle>
             {editingRow && (
               <p className="text-sm text-muted-foreground">
                 {editingRow.author?.full_name}
-                {emailOf(editingRow.contacts) && <span className="text-green-400/80"> · {emailOf(editingRow.contacts)}</span>}
+                {mode === "linkedin"
+                  ? linkedinOf(editingRow.contacts) && <span className="text-[#0a66c2]"> · {linkedinOf(editingRow.contacts)!.replace(/^https?:\/\/(www\.)?/, "")}</span>
+                  : emailOf(editingRow.contacts) && <span className="text-green-400/80"> · {emailOf(editingRow.contacts)}</span>}
               </p>
             )}
           </SheetHeader>
@@ -678,18 +885,32 @@ export default function EmailsPage() {
                 })()}
               </div>
             )}
+            {mode !== "linkedin" && (
+              <div className="space-y-1.5">
+                <Label>Subject</Label>
+                <Input value={editForm.subject} onChange={(e) => setEditForm(f => ({ ...f, subject: e.target.value }))} />
+              </div>
+            )}
             <div className="space-y-1.5">
-              <Label>Subject</Label>
-              <Input value={editForm.subject} onChange={(e) => setEditForm(f => ({ ...f, subject: e.target.value }))} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Body</Label>
-              <Textarea className="min-h-[320px] font-mono text-sm" value={editForm.body} onChange={(e) => setEditForm(f => ({ ...f, body: e.target.value }))} />
+              <Label className="flex items-center justify-between">
+                <span>{mode === "linkedin" ? "Connection note" : "Body"}</span>
+                {mode === "linkedin" && (
+                  <span className={`text-xs font-normal ${editForm.body.length > LINKEDIN_LIMIT ? "text-red-400" : "text-muted-foreground"}`}>{editForm.body.length}/{LINKEDIN_LIMIT}</span>
+                )}
+              </Label>
+              <Textarea className={`${mode === "linkedin" ? "min-h-[160px]" : "min-h-[320px]"} font-mono text-sm`} value={editForm.body} onChange={(e) => setEditForm(f => ({ ...f, body: e.target.value }))} />
+              {mode === "linkedin" && (
+                <div className="flex justify-end">
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => copyText(editForm.body, "Note")}>
+                    <Copy className="h-3 w-3 mr-1" />Copy
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
           <div className="px-6 py-4 border-t border-border flex justify-end gap-2 shrink-0">
             <Button variant="outline" onClick={() => setEditingRow(null)}>Cancel</Button>
-            <Button onClick={saveEmail} disabled={savingEmail}>
+            <Button onClick={saveEmail} disabled={savingEmail || (mode === "linkedin" && editForm.body.length > LINKEDIN_LIMIT)}>
               {savingEmail && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               <Check className="h-4 w-4 mr-1.5" />Save Changes
             </Button>
