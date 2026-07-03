@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock } from "lucide-react";
+import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -82,6 +82,18 @@ export default function SendingPage() {
   const [reschedId, setReschedId] = useState<string | null>(null);
   const [reschedVal, setReschedVal] = useState(""); // datetime-local (recipient-agnostic, browser local)
   const [savingResched, setSavingResched] = useState(false);
+  const [sendingNowId, setSendingNowId] = useState<string | null>(null);
+  const [collapsedSenders, setCollapsedSenders] = useState<Set<string>>(new Set());
+
+  // Send ONE queued email immediately (ignores its scheduled time).
+  async function sendNow(e: StatusEmail) {
+    setSendingNowId(e.id);
+    const res = await fetch(`/api/emails/${e.id}/send-now`, { method: "POST" }).then((r) => r.json()).catch(() => ({ ok: false }));
+    setSendingNowId(null);
+    if (res.ok) toast.success(`Sent to ${e.author_name}.`);
+    else toast.error(res.error ?? "Send failed.");
+    await load();
+  }
 
   // Standardise-timezone control (reschedule the whole queue to one tz)
   const [sendTz, setSendTz] = useState<string>("");
@@ -204,9 +216,19 @@ export default function SendingPage() {
   const failed = c.failed ?? 0;
   const nextUp = status?.upcoming?.[0];
 
+  // Group the queue by who's sending (each user sends their own). Expandable per sender.
+  const upcoming = status?.upcoming ?? [];
+  const senderGroups = Object.entries(
+    upcoming.reduce((acc, e) => {
+      const s = e.sender_email ?? "(server default)";
+      (acc[s] ??= []).push(e);
+      return acc;
+    }, {} as Record<string, StatusEmail[]>)
+  );
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
             <Send className="h-7 w-7 text-violet-500" />
@@ -216,10 +238,10 @@ export default function SendingPage() {
             Emails drip out automatically at each recipient&apos;s local time. This page updates live.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           {now && (
-            <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm tabular-nums" title="Your current local time">
-              <Clock className="h-3.5 w-3.5 text-violet-400" />
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm tabular-nums shrink-0 whitespace-nowrap" title="Your current local time">
+              <Clock className="h-3.5 w-3.5 text-violet-400 shrink-0" />
               <span className="font-medium">{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
               <span className="text-xs text-muted-foreground">{tzAbbr}</span>
             </div>
@@ -278,63 +300,77 @@ export default function SendingPage() {
           <div className="px-4 py-3 border-b border-border flex items-center gap-2 text-sm font-semibold">
             <Clock className="h-4 w-4 text-blue-400" />Queued — not yet sent ({scheduled})
           </div>
-          <div className="max-h-[520px] overflow-y-auto divide-y divide-border">
-            {(status?.upcoming ?? []).length === 0 ? (
+          <div className="max-h-[520px] overflow-y-auto">
+            {upcoming.length === 0 ? (
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">No emails scheduled</p>
             ) : (
-              status!.upcoming.map((e) => (
-                <div key={e.id} className="px-4 py-3 group">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate flex items-center gap-1.5">
-                        <button onClick={() => openAuthor(e.author_id)} className="truncate hover:text-violet-400 hover:underline text-left" title="View profile & articles">
-                          {e.author_name}
-                        </button>
-                        {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
-                      {e.sender_email && <p className="text-[10px] text-muted-foreground/70 truncate">from {e.sender_email}</p>}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xs font-medium text-blue-400">{e.local_label}</p>
-                      <p className="text-[10px] text-muted-foreground">{e.tz.split("/").pop()?.replace("_", " ")}</p>
-                    </div>
-                    <div className="flex items-center gap-0.5 shrink-0">
-                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Reschedule this email"
-                        onClick={() => { setReschedId(reschedId === e.id ? null : e.id); setReschedVal(toLocalInput(e.scheduled_at)); }}>
-                        <CalendarClock className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit this email" onClick={() => openEditor(e)}>
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-400" title="Cancel — remove from queue"
-                        disabled={cancelling === e.id} onClick={() => cancelScheduled(e)}>
-                        {cancelling === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
-                      </Button>
-                    </div>
+              senderGroups.map(([sender, emails]) => {
+                const collapsed = collapsedSenders.has(sender);
+                return (
+                  <div key={sender}>
+                    {/* Sender group — expandable */}
+                    <button
+                      onClick={() => setCollapsedSenders((prev) => { const n = new Set(prev); n.has(sender) ? n.delete(sender) : n.add(sender); return n; })}
+                      className="w-full flex items-center gap-2 px-4 py-2 bg-muted/20 border-y border-border text-left hover:bg-muted/30"
+                    >
+                      <ChevronRight className={`h-3.5 w-3.5 text-muted-foreground/60 transition-transform shrink-0 ${collapsed ? "" : "rotate-90"}`} />
+                      <span className="text-xs font-semibold truncate flex-1" title={sender}>{sender}</span>
+                      <span className="text-[10px] text-muted-foreground rounded-full bg-muted px-1.5">{emails.length}</span>
+                    </button>
+                    {!collapsed && (
+                      <div className="divide-y divide-border">
+                        {emails.map((e) => (
+                          <div key={e.id} className="px-4 py-3 group">
+                            <div className="flex items-center gap-3">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate flex items-center gap-1.5">
+                                  <button onClick={() => openAuthor(e.author_id)} className="truncate hover:text-violet-400 hover:underline text-left" title="View profile & articles">
+                                    {e.author_name}
+                                  </button>
+                                  {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
+                                </p>
+                                <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <p className="text-xs font-medium text-blue-400">{e.local_label}</p>
+                                <p className="text-[10px] text-muted-foreground">{e.tz.split("/").pop()?.replace("_", " ")}</p>
+                              </div>
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-green-400 hover:text-green-300" title="Send this email now"
+                                  disabled={sendingNowId === e.id} onClick={() => sendNow(e)}>
+                                  {sendingNowId === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Send className="h-3.5 w-3.5 mr-1" />Send</>}
+                                </Button>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Reschedule this email"
+                                  onClick={() => { setReschedId(reschedId === e.id ? null : e.id); setReschedVal(toLocalInput(e.scheduled_at)); }}>
+                                  <CalendarClock className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="Edit this email" onClick={() => openEditor(e)}>
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-red-400" title="Cancel — remove from queue"
+                                  disabled={cancelling === e.id} onClick={() => cancelScheduled(e)}>
+                                  {cancelling === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                                </Button>
+                              </div>
+                            </div>
+                            {reschedId === e.id && (
+                              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-muted/30 border border-border p-2">
+                                <input type="datetime-local" value={reschedVal} onChange={(ev) => setReschedVal(ev.target.value)} className="h-8 rounded-md border border-input bg-background px-2 text-xs" />
+                                <Button size="sm" className="h-8 text-xs" disabled={savingResched || !reschedVal}
+                                  onClick={() => reschedule(e.id, new Date(reschedVal).toISOString(), `Rescheduled ${e.author_name}.`)}>
+                                  {savingResched ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save time"}
+                                </Button>
+                                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setReschedId(null)}>Cancel</Button>
+                                <span className="text-[10px] text-muted-foreground w-full">Time is in your local zone ({tzAbbr}).</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {reschedId === e.id && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-muted/30 border border-border p-2">
-                      <input
-                        type="datetime-local"
-                        value={reschedVal}
-                        onChange={(ev) => setReschedVal(ev.target.value)}
-                        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                      />
-                      <Button size="sm" className="h-8 text-xs" disabled={savingResched || !reschedVal}
-                        onClick={() => reschedule(e.id, new Date(reschedVal).toISOString(), `Rescheduled ${e.author_name}.`)}>
-                        {savingResched ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save time"}
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-8 text-xs" disabled={savingResched}
-                        onClick={() => reschedule(e.id, new Date().toISOString(), `${e.author_name} set to send on the next run.`)}>
-                        Send next run
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setReschedId(null)}>Cancel</Button>
-                      <span className="text-[10px] text-muted-foreground w-full">Time is in your local zone ({tzAbbr}). Sends at the next processor run on/after this time.</span>
-                    </div>
-                  )}
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

@@ -1194,6 +1194,18 @@ export async function getWorkflowEmails(workflowId: string): Promise<OutreachEma
   return data ?? [];
 }
 
+// One outreach email with its resolved recipient (mailto) — for the per-email "Send now".
+export async function getOutreachEmailWithRecipient(id: string): Promise<(OutreachEmail & { recipient?: string }) | null> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("*, author:authors(contacts(type, value))")
+    .eq("id", id)
+    .maybeSingle();
+  if (!data) return null;
+  const mailto = ((data as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
+  return { ...(data as any), recipient: mailto ? (mailto.value as string).replace(/^mailto:/, "") : undefined };
+}
+
 export async function getOutreachEmail(id: string): Promise<OutreachEmail | null> {
   const { data, error } = await supabaseAdmin
     .from("outreach_emails")
