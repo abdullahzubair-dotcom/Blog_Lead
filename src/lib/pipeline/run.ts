@@ -68,6 +68,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
   const run = await createPipelineRun("full");
   startBuffer(run.id);
+  await snapshotBuffer().catch(() => {}); // overwrite any stale previous-run snapshot at once
   const stats: Record<string, number> = { hitsDiscovered: 0, processed: 0, authors: 0, errors: 0 };
 
   // Time budget: on Vercel, stop before the 300s function limit and hand off to a fresh

@@ -144,11 +144,15 @@ export default function HomePage() {
         const evs: PipelineProgressEvent[] = data.bufferedEvents ?? [];
         if (evs.length > 0) setPipelineEvents(evs);
         setPipelineElapsedMs(data.elapsedMs ?? 0);
-        setPipelineStats((prev) => ({
+        // THIS run's progress (starts at 0 each run), from the latest event's per-run stats —
+        // NOT the all-time DB totals, which made a fresh run look like a continuation.
+        const s = [...evs].reverse().find((e) => e.hitsDiscovered != null || e.processed != null || e.authors != null);
+        if (s) setPipelineStats((prev) => ({
           ...prev,
-          hitsDiscovered: data.totalHits ?? prev.hitsDiscovered ?? 0,
-          processed: data.processedHits ?? prev.processed ?? 0,
-          authors: data.totalAuthors ?? prev.authors ?? 0,
+          hitsDiscovered: s.hitsDiscovered ?? 0,
+          processed: s.processed ?? 0,
+          authors: s.authors ?? 0,
+          errors: s.errors ?? 0,
         }));
         if (!isReconnectedRef.current) setReconnected(true);
       } else if (isReconnectedRef.current && !sawRunningRef.current && discoverStartRef.current && Date.now() - discoverStartRef.current < 30_000) {
