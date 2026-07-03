@@ -154,6 +154,26 @@ export async function insertDiscoveryHit(hit: { url: string; source: string; que
   if (error) console.error("[insertDiscoveryHit]", error.message, hit.url.slice(0, 60));
 }
 
+// Bulk insert discovery hits — chunked upserts instead of one round-trip per hit. Sequential
+// single-row inserts run ~270ms each (Vercel↔Supabase latency), so 4000 hits would blow past
+// the 300s function limit mid-save; bulk does the same in seconds. Returns rows attempted.
+export async function insertDiscoveryHits(
+  hits: Array<{ url: string; source: string; query?: string; title?: string; snippet?: string }>,
+): Promise<number> {
+  const now = new Date().toISOString();
+  const rows = hits
+    .filter((h) => h.url && !isBlockedUrl(h.url))
+    .map((h) => ({ url: h.url, source: h.source, query: h.query ?? null, title: h.title ?? null, snippet: h.snippet ?? null, discovered_at: now, processed: false }));
+  let n = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500);
+    const { error } = await supabaseAdmin.from("discovery_hits").upsert(chunk, { onConflict: "url,source", ignoreDuplicates: true });
+    if (error) { console.error("[insertDiscoveryHits]", error.message); continue; }
+    n += chunk.length;
+  }
+  return n;
+}
+
 export async function getPendingHits(limit = 50): Promise<DiscoveryHit[]> {
   const { data, error } = await supabaseAdmin
     .from("discovery_hits")

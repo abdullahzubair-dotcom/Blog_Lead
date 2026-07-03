@@ -1,5 +1,5 @@
 import PQueue from "p-queue";
-import { getSeeds, getHarvesters, insertDiscoveryHit, getPendingHits, getAllPendingHits, markHitProcessed,
+import { getSeeds, getHarvesters, insertDiscoveryHits, getPendingHits, getAllPendingHits, markHitProcessed,
   upsertDomain, upsertAuthor, upsertArticle, upsertContact, upsertMention, linkArticleAuthor,
   upsertScore, createPipelineRun, finishPipelineRun, isSuppressed,
   getUnprofiledHits, countUnprofiledHits, getProfiledUrlSet,
@@ -149,10 +149,11 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         });
         const dupes = rawHits.length - hits.length;
         harvLog("rss", `Done — ${rawHits.length} feed items, ${hits.length} new unique (${dupes} dupes/already-known skipped), saving...`);
-        for (let i = 0; i < hits.length; i++) {
-          await insertDiscoveryHit(hits[i]).catch(() => {});
-          stats.hitsDiscovered++;
-          if ((i + 1) % 250 === 0) harvLog("rss", `Saved ${i + 1}/${hits.length} RSS hits...`);
+        // Bulk insert (chunks of 500) — one-by-one would take ~270ms/hit and blow the function limit.
+        for (let i = 0; i < hits.length; i += 500) {
+          const saved = await insertDiscoveryHits(hits.slice(i, i + 500)).catch(() => 0);
+          stats.hitsDiscovered += saved;
+          harvLog("rss", `Saved ${Math.min(i + 500, hits.length)}/${hits.length} RSS hits...`);
         }
         harvLog("rss", `All ${hits.length} unique RSS hits saved`);
       });
@@ -215,7 +216,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             harvLog("gdelt", `"${q}"`, q);
             const hits = await gdeltHarvester.run(q, { signal }).catch(() => []);
             gdeltTotal += hits.length;
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("gdelt", `"${q}" → ${hits.length} (total: ${gdeltTotal})`, q);
           });
         }
@@ -228,7 +229,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             if (signal.aborted) return;
             const hits = await hnHarvester.run(q, { signal }).catch(() => []);
             hnTotal += hits.length;
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("hackernews", `"${q}" → ${hits.length} (total: ${hnTotal})`, q);
           });
         }
@@ -242,7 +243,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             harvLog("reddit", `Tree: "${q}"`, q);
             const hits = await redditHarvester.run(q, { subreddits: configuredSubs, depth: 3, signal }).catch(() => []);
             redditTotal += hits.length;
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("reddit", `"${q}" → ${hits.length} links (total: ${redditTotal})`, q);
           });
         }
@@ -255,7 +256,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             if (signal.aborted) return;
             const hits = await wordpressHarvester.run(q, { domains: wpDomains, signal }).catch(() => []);
             wpTotal += hits.length;
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("wordpress", `"${q}" → ${hits.length} posts (total: ${wpTotal})`, q);
           });
         }
@@ -268,7 +269,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             if (signal.aborted) return;
             const hits = await braveHarvester.run(q, { signal }).catch(() => []);
             braveTotal += hits.length;
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("brave", `"${q}" → ${hits.length} (total: ${braveTotal})`, q);
           });
         }
@@ -281,7 +282,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         queue.add(async () => {
           if (signal.aborted) return;
           const hits = await googleNewsHarvester.run(q, { signal }).catch(() => []);
-          for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+          stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
           if (hits.length) harvLog("googlenews", `"${q}" → ${hits.length}`, q);
         });
       }
@@ -291,7 +292,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         queue.add(async () => {
           if (signal.aborted) return;
           const hits = await duckduckgoHarvester.run(q, { signal }).catch(() => []);
-          for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+          stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
           if (hits.length) harvLog("duckduckgo", `"${q}" → ${hits.length}`, q);
         });
       }
@@ -302,7 +303,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
           queue.add(async () => {
             if (signal.aborted) return;
             const hits = await webSearchHarvester.run(q, { maxResults: 10, signal }).catch(() => []);
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("websearch", `"${q}" → ${hits.length}`, q);
           });
         }
@@ -316,7 +317,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
           queue.add(async () => {
             if (signal.aborted) return;
             const hits = await scrapegraphHarvester.run(q, { maxResults: 5, signal }).catch(() => []);
-            for (const hit of hits) { await insertDiscoveryHit(hit).catch(() => {}); stats.hitsDiscovered++; }
+            stats.hitsDiscovered += await insertDiscoveryHits(hits).catch(() => 0);
             if (hits.length) harvLog("scrapegraph", `"${q}" → ${hits.length}`, q);
           });
         }
