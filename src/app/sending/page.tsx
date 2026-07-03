@@ -9,9 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
 
 interface StatusEmail {
   id: string;
+  author_id?: string;
   author_name: string;
   publication: string;
   subject: string;
@@ -73,6 +75,17 @@ export default function SendingPage() {
   const [reschedId, setReschedId] = useState<string | null>(null);
   const [reschedVal, setReschedVal] = useState(""); // datetime-local (recipient-agnostic, browser local)
   const [savingResched, setSavingResched] = useState(false);
+
+  // Read a sent email (subject + body)
+  const [reading, setReading] = useState<StatusEmail | null>(null);
+  const [readContent, setReadContent] = useState<{ subject: string; body: string } | null>(null);
+  const { openAuthor, drawer } = useAuthorDrawer();
+
+  async function openReader(e: StatusEmail) {
+    setReading(e); setReadContent(null);
+    const full = await fetch(`/api/emails/${e.id}`).then((r) => r.ok ? r.json() : null).catch(() => null);
+    setReadContent({ subject: full?.subject ?? e.subject ?? "", body: full?.body ?? "" });
+  }
 
   const load = useCallback(async () => {
     try {
@@ -230,7 +243,9 @@ export default function SendingPage() {
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate flex items-center gap-1.5">
-                        {e.author_name}
+                        <button onClick={() => openAuthor(e.author_id)} className="truncate hover:text-violet-400 hover:underline text-left" title="View profile & articles">
+                          {e.author_name}
+                        </button>
                         {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
@@ -289,21 +304,28 @@ export default function SendingPage() {
               <p className="px-4 py-8 text-center text-sm text-muted-foreground">Nothing sent yet</p>
             ) : (
               status!.recent.map((e) => (
-                <div key={e.id} className="px-4 py-3 flex items-center gap-3">
+                <div key={e.id} className="px-4 py-3 flex items-center gap-3 group">
                   {e.status === "sent"
                     ? <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
                     : <XCircle className="h-4 w-4 text-red-400 shrink-0" />}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{e.author_name}</p>
+                    <button onClick={() => openAuthor(e.author_id)} className="text-sm font-medium truncate max-w-full text-left hover:text-violet-400 hover:underline" title="View profile & articles">
+                      {e.author_name}
+                    </button>
                     <p className="text-xs text-muted-foreground truncate">
                       {e.status === "failed" ? <span className="text-red-400">{e.error}</span> : (e.subject || e.publication)}
                     </p>
                   </div>
-                  <div className="text-right shrink-0">
-                    <Badge variant="outline" className={`text-[10px] ${e.status === "sent" ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
-                      {e.status}
-                    </Badge>
-                    {e.status === "sent" && e.sent_at && <p className="text-[10px] text-muted-foreground mt-0.5">{sentLabel(e.sent_at)}</p>}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="text-right">
+                      <Badge variant="outline" className={`text-[10px] ${e.status === "sent" ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
+                        {e.status}
+                      </Badge>
+                      {e.status === "sent" && e.sent_at && <p className="text-[10px] text-muted-foreground mt-0.5">{sentLabel(e.sent_at)}</p>}
+                    </div>
+                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="Read the email that was sent" onClick={() => openReader(e)}>
+                      Read
+                    </Button>
                   </div>
                 </div>
               ))
@@ -344,6 +366,34 @@ export default function SendingPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Read a sent email (read-only) */}
+      <Sheet open={!!reading} onOpenChange={(v) => { if (!v) setReading(null); }}>
+        <SheetContent side="right" className="w-full sm:max-w-xl flex flex-col p-0 gap-0 overflow-hidden">
+          <SheetHeader className="px-6 py-4 border-b border-border shrink-0">
+            <SheetTitle>Sent email</SheetTitle>
+            {reading && <p className="text-sm text-muted-foreground">{reading.author_name}{reading.sent_at ? ` · sent ${sentLabel(reading.sent_at)}` : ""}</p>}
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {!readContent ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading…</div>
+            ) : (
+              <>
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Subject</p>
+                  <p className="text-sm font-medium">{readContent.subject || <span className="text-muted-foreground italic">(none)</span>}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Body</p>
+                  <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md border border-border bg-muted/20 p-3">{readContent.body || <span className="text-muted-foreground italic">(empty)</span>}</div>
+                </div>
+              </>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {drawer}
     </div>
   );
 }

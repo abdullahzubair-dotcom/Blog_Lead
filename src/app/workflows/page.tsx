@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { Workflow, Campaign, WorkflowProspect, WorkflowFilters } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
+import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
 
 function StatusBadge({ status }: { status: Workflow["status"] }) {
   if (status === "ready") return <Badge className="bg-green-500/15 text-green-400 border-green-500/30 hover:bg-green-500/15">Ready</Badge>;
@@ -127,9 +128,11 @@ function FilterPanel({ filters, onChange, stats }: { filters: WorkflowFilters; o
 function ProspectRow({
   p,
   onToggle,
+  onOpen,
 }: {
   p: WorkflowProspect;
   onToggle: (authorId: string, included: boolean) => void;
+  onOpen: (authorId: string) => void;
 }) {
   const score = p.score?.composite ?? null;
   const pub = p.domain?.name ?? p.domain?.host ?? "Unknown";
@@ -151,7 +154,13 @@ function ProspectRow({
         </AvatarFallback>
       </Avatar>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{p.author?.full_name ?? "Unknown"}</p>
+        <button
+          onClick={() => onOpen(p.author_id)}
+          className="text-sm font-medium truncate max-w-full text-left hover:text-violet-400 hover:underline"
+          title="View profile & articles"
+        >
+          {p.author?.full_name ?? "Unknown"}
+        </button>
         <p className="text-xs text-muted-foreground truncate">{pub}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
@@ -195,6 +204,7 @@ export default function WorkflowsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [search, setSearch] = useState("");
   const [scoreStats, setScoreStats] = useState<ScoreStats | null>(null);
+  const { openAuthor, drawer } = useAuthorDrawer();
 
   // Search-and-add: query ALL prospects (server-side) and add individuals to this workflow.
   const [addOpen, setAddOpen] = useState(false);
@@ -528,7 +538,7 @@ export default function WorkflowsPage() {
               ) : (
                 <div>
                   {filteredProspects.map((p) => (
-                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} />
+                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} onOpen={openAuthor} />
                   ))}
                 </div>
               )}
@@ -594,6 +604,8 @@ export default function WorkflowsPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {drawer}
     </div>
   );
 }

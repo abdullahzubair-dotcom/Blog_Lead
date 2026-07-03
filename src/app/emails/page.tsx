@@ -15,6 +15,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
+import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
 
 const TIMEZONES = [
   "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
@@ -110,6 +111,10 @@ export default function EmailsPage() {
   // Workflow search picker
   const [wfSearch, setWfSearch] = useState("");
   const [wfOpen, setWfOpen] = useState(false);
+
+  // Row search (filter the prospect list by name / publication) + author drawer
+  const [rowSearch, setRowSearch] = useState("");
+  const { openAuthor, drawer } = useAuthorDrawer();
 
   // Send config + scheduling
   const [config, setConfig] = useState<EmailSendConfig | null>(null);
@@ -334,6 +339,14 @@ export default function EmailsPage() {
   const includedRows = rows.filter((r) => r.included);
   const readyCount = rows.filter((r) => r.email && (r.email.status === "ready" || r.email.status === "sent")).length;
   const allIncluded = rows.length > 0 && rows.every((r) => r.included);
+  const displayRows = rowSearch.trim()
+    ? rows.filter((r) => {
+        const q = rowSearch.toLowerCase();
+        return (r.author?.full_name ?? "").toLowerCase().includes(q)
+          || (emailOf(r.contacts) ?? "").toLowerCase().includes(q)
+          || (r.email?.subject ?? "").toLowerCase().includes(q);
+      })
+    : rows;
 
   return (
     <div className="flex h-[calc(100vh-64px)] overflow-hidden">
@@ -444,9 +457,18 @@ export default function EmailsPage() {
             {genErrors.length > 0 && (
               <span className="text-red-400"><AlertCircle className="h-3 w-3 inline mr-1" />{genErrors.length} errors</span>
             )}
+            <div className="relative ml-auto w-56">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                value={rowSearch}
+                onChange={(e) => setRowSearch(e.target.value)}
+                placeholder="Search name, email, subject…"
+                className="w-full h-7 rounded-md border border-input bg-background pl-8 pr-2 text-xs outline-none"
+              />
+            </div>
             <button
-              className="ml-auto text-xs hover:text-foreground transition-colors"
-              onClick={() => rows.forEach((r) => { if (r.included === allIncluded) toggleInclude(r.author_id, !allIncluded); })}
+              className="text-xs hover:text-foreground transition-colors shrink-0"
+              onClick={() => toggleAllRows(!allIncluded)}
             >
               {allIncluded ? "Deselect all" : "Select all"}
             </button>
@@ -480,7 +502,7 @@ export default function EmailsPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {displayRows.map((row) => {
                   const author = row.author;
                   const lead = latestArticle(row.articles);
                   const email = emailOf(row.contacts);
@@ -504,7 +526,9 @@ export default function EmailsPage() {
                           </Avatar>
                           <div className="min-w-0">
                             <p className="font-medium truncate max-w-[180px] flex items-center gap-1.5">
-                              {author?.full_name ?? "Unknown"}
+                              <button onClick={() => openAuthor(row.author_id)} className="truncate hover:text-violet-400 hover:underline text-left" title="View profile & articles">
+                                {author?.full_name ?? "Unknown"}
+                              </button>
                               {contacted && (
                                 <button
                                   type="button"
@@ -736,6 +760,8 @@ export default function EmailsPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {drawer}
     </div>
   );
 }

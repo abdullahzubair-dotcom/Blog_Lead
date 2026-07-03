@@ -399,7 +399,11 @@ export default function HomePage() {
         const camp = campaigns.find((c) => c.id === addForm.campaign_id);
         toast.success(`Added ${addForm.full_name}${camp ? ` to “${camp.name}”` : ""}.`);
         setAddOpen(false);
-        fetchProspects(true);
+        // Jump straight to the new prospect so it's visibly added (it sorts by score, so it
+        // wouldn't otherwise land on page 1). Clear the campaign filter + search their name.
+        setActiveTab("prospects");
+        setFilterCampaignId("");
+        setSearch(addForm.full_name);
       } else {
         const d = await res.json().catch(() => ({}));
         toast.error(d.error ?? "Failed to add prospect.");

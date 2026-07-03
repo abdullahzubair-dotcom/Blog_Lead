@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
     const mailto = (e.author?.contacts ?? []).find((c: any) => c.type === "mailto");
     return {
       id: e.id,
+      author_id: e.author_id,
       author_name: e.author?.full_name ?? "Unknown",
       publication: e.author?.domain?.name ?? host ?? "",
       subject: e.subject ?? "",
