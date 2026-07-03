@@ -27,13 +27,19 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
   const fail = (res: Response) => onError?.(`${provider} HTTP ${res.status}`);
   try {
     if (provider === "tavily") {
+      const { trackTavilyCall, flagTavilyError } = await import("./tavilyUsage");
+      void trackTavilyCall(); // count toward the monthly-usage banner
       const res = await fetch("https://api.tavily.com/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: process.env.TAVILY_API_KEY, query, max_results: count, search_depth: "basic" }),
         signal: sig,
       });
-      if (!res.ok) { fail(res); return []; }
+      if (!res.ok) {
+        // 401 bad key, 429 rate-limited, 432/402 quota exhausted → surface in the banner.
+        if ([401, 402, 403, 429, 432].includes(res.status)) void flagTavilyError(`HTTP ${res.status}`);
+        fail(res); return [];
+      }
       const d = await res.json();
       return (d.results ?? []).map((r: any) => ({ url: r.url, title: r.title ?? "", snippet: (r.content ?? "").slice(0, 300) })).filter((h: SearchHit) => h.url?.startsWith("http"));
     }

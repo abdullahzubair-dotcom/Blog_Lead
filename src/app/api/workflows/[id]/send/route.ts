@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getWorkflowEmails, getWorkflowProspects, getSendConfigOrDefault, scheduleWorkflowEmails, setAuthorTimezones, getContactedAuthorIds } from "@/lib/db/queries";
+import { getWorkflowEmails, getWorkflowProspects, getSendConfigOrDefault, scheduleWorkflowEmails, getContactedAuthorIds } from "@/lib/db/queries";
 import { computeSmartSchedule, type ScheduleRecipient } from "@/lib/email/schedule";
-import { inferTimezones, type TzCandidate } from "@/lib/email/inferTz";
 
 export const maxDuration = 300;
 
@@ -44,33 +43,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       });
     }
 
-    // Resolve each author's timezone. Use the cached value where present; infer the rest.
-    const tzByAuthor: Record<string, string> = {};
-    const toInfer: TzCandidate[] = [];
-    for (const e of sendable) {
-      const p: any = prospectByAuthor.get(e.author_id);
-      const cached = p?.author?.timezone as string | undefined;
-      if (cached) { tzByAuthor[e.author_id] = cached; continue; }
-      toInfer.push({
-        authorId: e.author_id,
-        name: p?.author?.full_name ?? "Unknown",
-        publication: p?.domain?.name ?? undefined,
-        host: p?.domain?.host ?? undefined,
-        country: p?.domain?.country ?? undefined,
-        bio: p?.author?.bio ?? undefined,
-      });
-    }
-
-    if (toInfer.length > 0) {
-      const inferred = await inferTimezones(toInfer, config.timezone);
-      Object.assign(tzByAuthor, inferred);
-      await setAuthorTimezones(inferred).catch(() => {}); // cache for next time
-    }
-
-    const recipients: ScheduleRecipient[] = sendable.map((e) => ({
-      id: e.id,
-      tz: tzByAuthor[e.author_id] || config.timezone,
-    }));
+    // Standardised: everyone is scheduled in the ONE timezone set in the schedule config
+    // (a single, predictable send window) rather than per-recipient inference.
+    const recipients: ScheduleRecipient[] = sendable.map((e) => ({ id: e.id, tz: config.timezone }));
 
     const slots = computeSmartSchedule(recipients, config, new Date());
     await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at));

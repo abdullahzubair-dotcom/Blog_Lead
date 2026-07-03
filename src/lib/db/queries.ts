@@ -1472,6 +1472,31 @@ export async function scheduleWorkflowEmails(
   }
 }
 
+// Reschedule every currently-queued email into a new standardised timezone. Recomputes each
+// workflow's queue with computeSmartSchedule (its own window/spacing/cap, the new timezone
+// for all) and persists the timezone to that workflow's config. Returns how many moved.
+export async function rescheduleScheduledToTimezone(timezone: string): Promise<number> {
+  const { computeSmartSchedule } = await import("@/lib/email/schedule");
+  const rows = await fetchAllRows<{ id: string; workflow_id: string; scheduled_at: string | null }>(
+    "outreach_emails", "id, workflow_id, scheduled_at", (q) => q.eq("status", "scheduled"),
+  );
+  const byWf = new Map<string, string[]>();
+  for (const r of rows.sort((a, b) => (a.scheduled_at ?? "").localeCompare(b.scheduled_at ?? ""))) {
+    if (!byWf.has(r.workflow_id)) byWf.set(r.workflow_id, []);
+    byWf.get(r.workflow_id)!.push(r.id);
+  }
+  let moved = 0;
+  const now = new Date();
+  for (const [workflowId, ids] of byWf) {
+    const config = await getSendConfigOrDefault(workflowId);
+    const slots = computeSmartSchedule(ids.map((id) => ({ id, tz: timezone })), { ...config, timezone }, now);
+    await scheduleWorkflowEmails(workflowId, slots.map((s) => s.id), slots.map((s) => s.at));
+    await upsertSendConfig(workflowId, { timezone }).catch(() => {});
+    moved += ids.length;
+  }
+  return moved;
+}
+
 // Sending status for the progress page — counts by status + the next upcoming and
 // most-recent emails, with author/domain so the UI can show recipient + local time.
 export async function getSendingStatus(workflowId?: string): Promise<{

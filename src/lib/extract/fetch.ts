@@ -1,4 +1,7 @@
-const UA = "GenAI-Scout/1.0 (+http://localhost:3000)";
+// A real Chrome UA — a bot UA gets 403'd or served stub HTML by most sites, which on Vercel
+// (no headless browser) means zero extracted authors. Fetching like a browser recovers the
+// large majority of SSR article/blog/news pages without needing Playwright.
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
 export interface FetchResult {
   html: string;
@@ -25,8 +28,15 @@ export async function fetchPage(url: string, abortSignal?: AbortSignal): Promise
     const res = await fetch(url, {
       headers: {
         "User-Agent": UA,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "sec-ch-ua": '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
       },
       redirect: "follow",
       signal,

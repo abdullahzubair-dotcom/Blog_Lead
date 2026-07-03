@@ -11,6 +11,12 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
 
+const TIMEZONES = [
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+  "Europe/London", "Europe/Berlin", "Asia/Karachi", "Asia/Dubai", "Asia/Kolkata",
+  "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "UTC",
+];
+
 interface StatusEmail {
   id: string;
   author_id?: string;
@@ -76,6 +82,10 @@ export default function SendingPage() {
   const [reschedVal, setReschedVal] = useState(""); // datetime-local (recipient-agnostic, browser local)
   const [savingResched, setSavingResched] = useState(false);
 
+  // Standardise-timezone control (reschedule the whole queue to one tz)
+  const [sendTz, setSendTz] = useState<string>("");
+  const [applyingTz, setApplyingTz] = useState(false);
+
   // Read a sent email (subject + body)
   const [reading, setReading] = useState<StatusEmail | null>(null);
   const [readContent, setReadContent] = useState<{ subject: string; body: string } | null>(null);
@@ -91,9 +101,27 @@ export default function SendingPage() {
     try {
       const data = await fetch("/api/emails/status").then((r) => r.json());
       setStatus(data);
+      // Seed the timezone selector from the current queue's timezone (once).
+      setSendTz((prev) => prev || data?.upcoming?.[0]?.tz || data?.recent?.[0]?.tz || "");
     } catch {}
     setLoading(false);
   }, []);
+
+  async function applyTimezone() {
+    if (!sendTz) return;
+    setApplyingTz(true);
+    try {
+      const res = await fetch("/api/emails/reschedule", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timezone: sendTz }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) toast.success(`Rescheduled ${d.rescheduled ?? 0} queued email${d.rescheduled === 1 ? "" : "s"} to ${sendTz}.`);
+      else toast.error(d.error ?? "Reschedule failed");
+      await load();
+    } catch { toast.error("Reschedule failed"); }
+    setApplyingTz(false);
+  }
 
   useEffect(() => {
     load();
@@ -189,12 +217,27 @@ export default function SendingPage() {
         </div>
         <div className="flex items-center gap-2">
           {now && (
-            <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm tabular-nums" title="Your current local time — queued sends fire at each recipient's local time">
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-sm tabular-nums" title="Your current local time">
               <Clock className="h-3.5 w-3.5 text-violet-400" />
               <span className="font-medium">{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
               <span className="text-xs text-muted-foreground">{tzAbbr}</span>
             </div>
           )}
+          {/* Standardise the whole queue to one timezone */}
+          <div className="flex items-center gap-1.5" title="Reschedule every queued email into this timezone">
+            <select
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+              value={sendTz}
+              onChange={(e) => setSendTz(e.target.value)}
+            >
+              {!sendTz && <option value="">Timezone…</option>}
+              {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+            </select>
+            <Button variant="outline" size="sm" onClick={applyTimezone} disabled={applyingTz || !sendTz || scheduled === 0} className="gap-1.5" title={scheduled === 0 ? "Nothing queued" : "Reschedule the queue to this timezone"}>
+              {applyingTz ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
+              Apply
+            </Button>
+          </div>
           <Button variant="outline" size="sm" onClick={load} className="gap-1.5">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />Refresh
           </Button>

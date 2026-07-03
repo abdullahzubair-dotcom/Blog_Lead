@@ -693,16 +693,16 @@ export default function EmailsPage() {
         <SheetContent side="right" className="w-full sm:max-w-md flex flex-col p-0 gap-0 overflow-hidden">
           <SheetHeader className="px-6 py-4 border-b border-border shrink-0">
             <SheetTitle>Sending schedule</SheetTitle>
-            <p className="text-sm text-muted-foreground">Each recipient is scheduled in <span className="text-foreground font-medium">their own local time</span> — inferred from their site/country, or an AI guess. These settings define the daily window &amp; spacing applied per person.</p>
+            <p className="text-sm text-muted-foreground">Every email is scheduled in the <span className="text-foreground font-medium">one timezone</span> you pick here — a single, predictable send window for everyone.</p>
           </SheetHeader>
           {config && (
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3 flex items-start gap-2 text-xs text-muted-foreground">
                 <Globe className="h-4 w-4 text-violet-400 shrink-0 mt-0.5" />
-                <span>Emails are sent per-recipient in their local timezone. The setting below is only the <span className="text-foreground">fallback</span> used when we can&apos;t determine someone&apos;s timezone.</span>
+                <span>All recipients are standardised to this timezone. You can also change it later on the Sending page and reschedule the queue.</span>
               </div>
               <div className="space-y-1.5">
-                <Label>Fallback timezone <span className="text-muted-foreground font-normal">(when a recipient&apos;s can&apos;t be inferred)</span></Label>
+                <Label>Sending timezone <span className="text-muted-foreground font-normal">(applies to everyone)</span></Label>
                 <select
                   className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
                   value={config.timezone}
@@ -747,7 +747,7 @@ export default function EmailsPage() {
                 <p className="text-xs text-muted-foreground">Leave blank to use the default sender configured on the server.</p>
               </div>
               <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-                Each email lands in the recipient&apos;s local {config.send_hour_start}:00–{config.send_hour_end}:00 window, {config.gap_minutes} min apart, up to {config.daily_cap}/day. Overflow rolls to the next day. Unknown timezones fall back to {config.timezone}.
+                Every email sends {config.send_hour_start}:00–{config.send_hour_end}:00 {config.timezone}, {config.gap_minutes} min apart, up to {config.daily_cap}/day. Overflow rolls to the next day.
               </div>
             </div>
           )}
