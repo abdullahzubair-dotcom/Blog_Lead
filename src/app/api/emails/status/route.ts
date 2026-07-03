@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
     return {
       id: e.id,
       author_id: e.author_id,
+      sender_email: e.sender_email ?? null,
       author_name: e.author?.full_name ?? "Unknown",
       publication: e.author?.domain?.name ?? host ?? "",
       subject: e.subject ?? "",

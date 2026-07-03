@@ -121,6 +121,7 @@ export default function EmailsPage() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [scheduling, setScheduling] = useState(false);
+  const [needAppPw, setNeedAppPw] = useState(false); // Send All blocked: no Gmail app password yet
 
   useEffect(() => {
     Promise.all([
@@ -164,10 +165,11 @@ export default function EmailsPage() {
     setScheduling(true);
     const res = await fetch(`/api/workflows/${selectedWorkflow.id}/send`, { method: "POST" });
     const data = await res.json().catch(() => ({}));
-    if (res.ok && data.scheduled > 0) {
-      const zones = data.timezones ? Object.keys(data.timezones).length : 1;
+    if (data.needsAppPassword) {
+      setNeedAppPw(true); // must add their Gmail app password first
+    } else if (res.ok && data.scheduled > 0) {
       const skipped = data.skippedContacted ? ` (${data.skippedContacted} skipped — already contacted elsewhere)` : "";
-      toast.success(`Scheduled ${data.scheduled} emails across ${zones} timezone${zones === 1 ? "" : "s"}${skipped}. Opening progress…`);
+      toast.success(`Scheduled ${data.scheduled} emails from ${data.sender}${skipped}. Opening progress…`);
       router.push("/sending");
     } else if (res.ok) {
       toast.error(data.reason ?? "Nothing to schedule — generate emails first.");
@@ -337,7 +339,14 @@ export default function EmailsPage() {
   }
 
   const includedRows = rows.filter((r) => r.included);
-  const readyCount = rows.filter((r) => r.email && (r.email.status === "ready" || r.email.status === "sent")).length;
+  // Match what "Send All" actually schedules: included + not contacted elsewhere + has a real
+  // email + status ready/scheduled. (Old count included "sent" and ignored these filters.)
+  const readyCount = rows.filter((r) =>
+    r.included &&
+    !contactedElsewhere.has(r.author_id) &&
+    !!emailOf(r.contacts) &&
+    r.email && (r.email.status === "ready" || r.email.status === "scheduled")
+  ).length;
   const allIncluded = rows.length > 0 && rows.every((r) => r.included);
   const displayRows = rowSearch.trim()
     ? rows.filter((r) => {
@@ -430,8 +439,8 @@ export default function EmailsPage() {
                 ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Generating...</>
                 : <><Sparkles className="h-3.5 w-3.5 mr-1.5" />Generate ({includedRows.length})</>}
             </Button>
-            {/* Schedule settings */}
-            <Button size="sm" variant="outline" onClick={() => setShowSchedule(true)} disabled={!selectedWorkflow} title="Timezone, sending window & spacing">
+            {/* Schedule is per-user now — configured in Settings */}
+            <Button size="sm" variant="outline" onClick={() => router.push("/settings")} title="Your timezone, window & spacing (per-user)">
               <Clock className="h-3.5 w-3.5 mr-1.5" />Schedule
             </Button>
             {/* Stage 3 — schedule the send (drip via SMTP) */}
@@ -760,6 +769,31 @@ export default function EmailsPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Send All blocked — user hasn't added their Gmail app password */}
+      <Dialog open={needAppPw} onOpenChange={setNeedAppPw}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add your Gmail app password first</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1 text-sm">
+            <p className="text-muted-foreground">
+              Emails send from <span className="text-foreground font-medium">your own Gmail</span>, so you need a Gmail
+              <b> app password</b> (not your normal password). One-time setup:
+            </p>
+            <ol className="space-y-1.5 text-muted-foreground list-decimal pl-5">
+              <li>Turn on <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noreferrer">2-Step Verification</a>.</li>
+              <li>Create an app password (choose “Mail”) at <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>.</li>
+              <li>Paste it into <b>Settings → Your sending email</b> and save.</li>
+            </ol>
+            <p className="text-xs text-muted-foreground">You can change it anytime in Settings.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNeedAppPw(false)}>Later</Button>
+            <Button onClick={() => { setNeedAppPw(false); router.push("/settings"); }}>Go to Settings</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {drawer}
     </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getSendConfigOrDefault } from "@/lib/db/queries";
-import { sendEmail } from "@/lib/email/smtp";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc } from "@/lib/db/queries";
+import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
+import { decryptSecret } from "@/lib/crypto";
 import { acquireLock, releaseLock, incrDailyCount, getDailyCount } from "@/lib/redis";
 import { auth } from "@auth";
 
@@ -37,10 +38,14 @@ export async function POST(req: NextRequest) {
   }
 
   const day = new Date().toISOString().slice(0, 10); // UTC date bucket for the daily cap
-  const configCache = new Map<string, Awaited<ReturnType<typeof getSendConfigOrDefault>>>();
-  const configFor = async (workflowId: string) => {
-    if (!configCache.has(workflowId)) configCache.set(workflowId, await getSendConfigOrDefault(workflowId));
-    return configCache.get(workflowId)!;
+  // Per-sender credential + config cache (each email sends from its own user's Gmail).
+  const senderCache = new Map<string, { pass: string | null; fromName?: string; cap: number }>();
+  const senderInfo = async (email: string) => {
+    if (!senderCache.has(email)) {
+      const [enc, cfg] = await Promise.all([getUserAppPasswordEnc(email), getUserEmailConfig(email)]);
+      senderCache.set(email, { pass: decryptSecret(enc), fromName: cfg.from_name, cap: cfg.daily_cap });
+    }
+    return senderCache.get(email)!;
   };
 
   let sent = 0, failed = 0, cappedSkipped = 0;
@@ -56,23 +61,27 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      const config = await configFor(email.workflow_id);
+      const sender = (email as any).sender_email as string | undefined;
+      let res;
 
-      // Durable daily-cap guard (schedule already spaces per day; this is the safety net).
-      const already = await getDailyCount(email.workflow_id, day);
-      if (already >= config.daily_cap) { cappedSkipped++; continue; }
-
-      const res = await sendEmail({
-        to: email.recipient,
-        subject: email.subject ?? "(no subject)",
-        body: email.body ?? "",
-        fromName: config.from_name || undefined,
-        fromEmail: config.from_email || undefined,
-      });
+      if (sender) {
+        const info = await senderInfo(sender);
+        if (!info.pass) {
+          await updateOutreachEmail(email.id, { status: "failed", error: `Sender ${sender} has no app password set` });
+          failed++; results.push({ id: email.id, ok: false, error: "no app password" });
+          continue;
+        }
+        // Daily cap is per-sender (keyed by their email).
+        if ((await getDailyCount(sender, day)) >= info.cap) { cappedSkipped++; continue; }
+        res = await sendEmailAs({ user: sender, pass: info.pass, fromName: info.fromName, to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "" });
+      } else {
+        // Legacy path — no per-user sender: fall back to the server SMTP identity.
+        res = await sendEmail({ to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "" });
+      }
 
       if (res.ok) {
         await updateOutreachEmail(email.id, { status: "sent", sent_at: new Date().toISOString(), error: undefined });
-        await incrDailyCount(email.workflow_id, day);
+        await incrDailyCount(sender ?? email.workflow_id, day);
         sent++; results.push({ id: email.id, ok: true });
       } else {
         await updateOutreachEmail(email.id, { status: "failed", error: res.error });

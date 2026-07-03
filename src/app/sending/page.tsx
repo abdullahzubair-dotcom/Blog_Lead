@@ -20,6 +20,7 @@ const TIMEZONES = [
 interface StatusEmail {
   id: string;
   author_id?: string;
+  sender_email?: string | null;
   author_name: string;
   publication: string;
   subject: string;
@@ -292,6 +293,7 @@ export default function SendingPage() {
                         {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
+                      {e.sender_email && <p className="text-[10px] text-muted-foreground/70 truncate">from {e.sender_email}</p>}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs font-medium text-blue-400">{e.local_label}</p>
@@ -358,6 +360,7 @@ export default function SendingPage() {
                     <p className="text-xs text-muted-foreground truncate">
                       {e.status === "failed" ? <span className="text-red-400">{e.error}</span> : (e.subject || e.publication)}
                     </p>
+                    {e.sender_email && <p className="text-[10px] text-muted-foreground/70 truncate">from {e.sender_email}{e.status === "sent" && e.sent_at ? ` · ${sentLabel(e.sent_at)}` : ""}</p>}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <div className="text-right">

@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { UserEmailConfigCard } from "@/components/settings/UserEmailConfig";
 
 interface ConfigItem {
   key: string;
@@ -36,6 +37,10 @@ export default function SettingsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
       </div>
+
+      {/* Per-user sending identity (each user sends from their own Gmail) */}
+      <UserEmailConfigCard />
+
       <p className="text-muted-foreground text-sm">
         API keys and configuration are managed via <code className="bg-muted px-1 rounded text-violet-500">.env.local</code>.
         Restart the server after any changes.

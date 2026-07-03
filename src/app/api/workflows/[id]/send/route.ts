@@ -1,21 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getWorkflowEmails, getWorkflowProspects, getSendConfigOrDefault, scheduleWorkflowEmails, getContactedAuthorIds } from "@/lib/db/queries";
+import { auth } from "@auth";
+import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds } from "@/lib/db/queries";
 import { computeSmartSchedule, type ScheduleRecipient } from "@/lib/email/schedule";
+import type { EmailSendConfig } from "@/lib/types";
 
 export const maxDuration = 300;
 
-// POST — schedule all ready emails for included prospects. Each email is placed inside
-// its RECIPIENT'S local send window, using a per-author timezone that we determine from
-// (1) a cached authors.timezone, (2) country-code TLD, or (3) an LLM guess off the
-// writer's name + publication. All sends still share one account, so they stay spaced
-// apart and under the daily cap. Delivery happens via the Vercel cron → /api/emails/process.
+// POST — schedule all ready emails for included prospects. Sends from the LOGGED-IN USER'S
+// own Gmail, on THEIR schedule (timezone/window/spacing/cap). Requires the user to have set
+// their Gmail app password first (else returns needsAppPassword for the UI popup). Each
+// scheduled email is stamped with the sender; delivery happens via the send-processor.
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const [emails, { prospects }, config] = await Promise.all([
+    const session = await auth().catch(() => null);
+    const senderEmail = (session?.user?.email as string | undefined) ?? "";
+    if (!senderEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+
+    const userCfg = await getUserEmailConfig(senderEmail);
+    if (!userCfg.hasPassword) {
+      return NextResponse.json({
+        needsAppPassword: true,
+        reason: "Add your Gmail app password in Settings so emails send from your own address.",
+      });
+    }
+    // Shape the per-user config for computeSmartSchedule.
+    const config: EmailSendConfig = {
+      id: "", workflow_id: id, provider: "smtp", created_at: "",
+      timezone: userCfg.timezone, send_hour_start: userCfg.send_hour_start, send_hour_end: userCfg.send_hour_end,
+      gap_minutes: userCfg.gap_minutes, daily_cap: userCfg.daily_cap, from_name: userCfg.from_name, from_email: senderEmail,
+    };
+
+    const [emails, { prospects }] = await Promise.all([
       getWorkflowEmails(id),
       getWorkflowProspects(id, { limit: 1000 }),
-      getSendConfigOrDefault(id),
     ]);
 
     const includedIds = new Set(prospects.filter((p) => p.included).map((p) => p.author_id));
@@ -43,24 +61,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       });
     }
 
-    // Standardised: everyone is scheduled in the ONE timezone set in the schedule config
-    // (a single, predictable send window) rather than per-recipient inference.
+    // Everyone in this sender's queue is scheduled in the sender's own timezone/window.
     const recipients: ScheduleRecipient[] = sendable.map((e) => ({ id: e.id, tz: config.timezone }));
 
     const slots = computeSmartSchedule(recipients, config, new Date());
-    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at));
-
-    // Report the distribution of timezones so it's clear they differ
-    const tzCounts: Record<string, number> = {};
-    for (const r of recipients) tzCounts[r.tz] = (tzCounts[r.tz] ?? 0) + 1;
+    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail);
 
     return NextResponse.json({
       scheduled: slots.length,
       skippedContacted,
+      sender: senderEmail,
       firstAt: slots[0]?.at,
       lastAt: slots[slots.length - 1]?.at,
-      timezones: tzCounts,
-      config: { fallback_timezone: config.timezone, gap_minutes: config.gap_minutes, daily_cap: config.daily_cap, window: `${config.send_hour_start}:00–${config.send_hour_end}:00` },
+      timezone: config.timezone,
+      config: { timezone: config.timezone, gap_minutes: config.gap_minutes, daily_cap: config.daily_cap, window: `${config.send_hour_start}:00–${config.send_hour_end}:00` },
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

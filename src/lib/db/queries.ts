@@ -1440,6 +1440,41 @@ export async function isAuthorContacted(authorId: string): Promise<{ contacted: 
   return { contacted, override, hasHistory };
 }
 
+// ─── Per-user email config (own Gmail + own schedule) ──────────────────────────
+
+const DEFAULT_USER_CONFIG = { timezone: "America/New_York", send_hour_start: 9, send_hour_end: 17, gap_minutes: 15, daily_cap: 50 };
+
+// Client-safe config (no password). Returns defaults (hasPassword=false) if unset.
+export async function getUserEmailConfig(userEmail: string): Promise<import("@/lib/types").UserEmailConfig> {
+  const { data } = await supabaseAdmin.from("user_email_config").select("*").eq("user_email", userEmail).maybeSingle();
+  return {
+    user_email: userEmail,
+    from_name: data?.from_name ?? undefined,
+    timezone: data?.timezone ?? DEFAULT_USER_CONFIG.timezone,
+    send_hour_start: data?.send_hour_start ?? DEFAULT_USER_CONFIG.send_hour_start,
+    send_hour_end: data?.send_hour_end ?? DEFAULT_USER_CONFIG.send_hour_end,
+    gap_minutes: data?.gap_minutes ?? DEFAULT_USER_CONFIG.gap_minutes,
+    daily_cap: data?.daily_cap ?? DEFAULT_USER_CONFIG.daily_cap,
+    hasPassword: !!data?.app_password_enc,
+  };
+}
+
+export async function upsertUserEmailConfig(userEmail: string, data: {
+  app_password_enc?: string; from_name?: string; timezone?: string;
+  send_hour_start?: number; send_hour_end?: number; gap_minutes?: number; daily_cap?: number;
+}): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("user_email_config")
+    .upsert({ user_email: userEmail, ...data, updated_at: new Date().toISOString() }, { onConflict: "user_email" });
+  if (error) throw error;
+}
+
+// Server-only: the encrypted app password for a sender (decrypted by the caller at send time).
+export async function getUserAppPasswordEnc(userEmail: string): Promise<string | null> {
+  const { data } = await supabaseAdmin.from("user_email_config").select("app_password_enc").eq("user_email", userEmail).maybeSingle();
+  return (data?.app_password_enc as string | undefined) ?? null;
+}
+
 // ─── Email send config & scheduling ─────────────────────────────────────────────
 
 const DEFAULT_SEND_CONFIG = {
@@ -1482,13 +1517,13 @@ export async function upsertSendConfig(workflowId: string, data: Partial<EmailSe
 export async function scheduleWorkflowEmails(
   workflowId: string,
   emailIdsInOrder: string[],
-  times: string[]
+  times: string[],
+  senderEmail?: string,
 ): Promise<void> {
   for (let i = 0; i < emailIdsInOrder.length && i < times.length; i++) {
-    await supabaseAdmin
-      .from("outreach_emails")
-      .update({ scheduled_at: times[i], status: "scheduled", error: null })
-      .eq("id", emailIdsInOrder[i]);
+    const patch: Record<string, unknown> = { scheduled_at: times[i], status: "scheduled", error: null };
+    if (senderEmail) patch.sender_email = senderEmail; // whose mailbox this sends from
+    await supabaseAdmin.from("outreach_emails").update(patch).eq("id", emailIdsInOrder[i]);
   }
 }
 
@@ -1526,7 +1561,7 @@ export async function getSendingStatus(workflowId?: string): Promise<{
 }> {
   const base = () => {
     let q = supabaseAdmin.from("outreach_emails").select(
-      "id, workflow_id, author_id, subject, status, scheduled_at, sent_at, error, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
+      "id, workflow_id, author_id, sender_email, subject, status, scheduled_at, sent_at, error, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
     );
     if (workflowId) q = q.eq("workflow_id", workflowId) as any;
     return q;

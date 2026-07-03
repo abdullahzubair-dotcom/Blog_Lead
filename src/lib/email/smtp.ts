@@ -59,6 +59,38 @@ export async function sendEmail(opts: {
   }
 }
 
+function htmlify(body: string): string {
+  return body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>");
+}
+
+// Send as a SPECIFIC user via their own Gmail app password (per-user sending). Builds a
+// throwaway transport for that identity — correct even if the password changed.
+export async function sendEmailAs(opts: {
+  user: string; pass: string; fromName?: string; to: string; subject: string; body: string;
+}): Promise<SendResult> {
+  try {
+    const tx = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user: opts.user, pass: opts.pass } });
+    const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
+    const info = await tx.sendMail({ from, to: opts.to, subject: opts.subject, text: opts.body, html: htmlify(opts.body) });
+    tx.close();
+    return { ok: true, messageId: info.messageId };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "send failed" };
+  }
+}
+
+// Verify a user's Gmail app password without sending (Settings "test connection").
+export async function verifyGmail(user: string, pass: string): Promise<SendResult> {
+  try {
+    const tx = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass } });
+    await tx.verify();
+    tx.close();
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "verify failed" };
+  }
+}
+
 // Verify the SMTP connection/credentials without sending anything.
 export async function verifyTransport(): Promise<SendResult> {
   const tx = getTransport();

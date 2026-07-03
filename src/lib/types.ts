@@ -237,6 +237,18 @@ export interface OutreachEmail {
   author?: Author;
 }
 
+// Per-user sending identity + schedule. Each logged-in user sends from their own Gmail.
+export interface UserEmailConfig {
+  user_email: string;
+  from_name?: string;
+  timezone: string;
+  send_hour_start: number;
+  send_hour_end: number;
+  gap_minutes: number;
+  daily_cap: number;
+  hasPassword: boolean; // never expose the password itself to the client
+}
+
 export interface EmailSendConfig {
   id: string;
   workflow_id: string;
