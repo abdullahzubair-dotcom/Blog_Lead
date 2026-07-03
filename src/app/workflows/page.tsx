@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus } from "lucide-react";
+import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -129,10 +129,12 @@ function ProspectRow({
   p,
   onToggle,
   onOpen,
+  contacted,
 }: {
   p: WorkflowProspect;
   onToggle: (authorId: string, included: boolean) => void;
   onOpen: (authorId: string) => void;
+  contacted?: boolean;
 }) {
   const score = p.score?.composite ?? null;
   const pub = p.domain?.name ?? p.domain?.host ?? "Unknown";
@@ -164,6 +166,11 @@ function ProspectRow({
         <p className="text-xs text-muted-foreground truncate">{pub}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {contacted && (
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-amber-400 border-amber-500/40" title="Already emailed/queued in another campaign">
+            contacted
+          </Badge>
+        )}
         {liUrl && (
           <a href={liUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
             className="text-[#0a66c2] hover:text-[#0a66c2]/80" title={liUrl.replace(/^https?:\/\/(www\.)?/, "")}>
@@ -204,6 +211,7 @@ export default function WorkflowsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [search, setSearch] = useState("");
   const [scoreStats, setScoreStats] = useState<ScoreStats | null>(null);
+  const [contactedElsewhere, setContactedElsewhere] = useState<Set<string>>(new Set());
   const { openAuthor, drawer } = useAuthorDrawer();
 
   // Search-and-add: query ALL prospects (server-side) and add individuals to this workflow.
@@ -242,6 +250,9 @@ export default function WorkflowsPage() {
     fetchProspects(wf);
     fetch(`/api/score-stats${wf.campaign_id ? `?campaign_id=${wf.campaign_id}` : ""}`)
       .then((r) => r.ok ? r.json() : null).then(setScoreStats).catch(() => {});
+    // Who's already been emailed/queued in OTHER workflows — shows a "contacted" tag here.
+    fetch(`/api/outreach/contacted?exclude_workflow=${wf.id}`)
+      .then((r) => r.ok ? r.json() : null).then((d) => setContactedElsewhere(new Set(d?.authorIds ?? []))).catch(() => {});
   }
 
   async function handleCreate() {
@@ -423,6 +434,16 @@ export default function WorkflowsPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => window.open(`/api/workflows/${selected.id}/export`, "_blank")}
+                disabled={total === 0}
+                title="Download this list (name, articles, domain rating) as a spreadsheet"
+              >
+                <Download className="h-3.5 w-3.5 mr-1.5" />
+                Export List
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setShowFilters(true)}
               >
                 <Filter className="h-3.5 w-3.5 mr-1.5" />
@@ -538,7 +559,7 @@ export default function WorkflowsPage() {
               ) : (
                 <div>
                   {filteredProspects.map((p) => (
-                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} onOpen={openAuthor} />
+                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} onOpen={openAuthor} contacted={contactedElsewhere.has(p.author_id)} />
                   ))}
                 </div>
               )}
