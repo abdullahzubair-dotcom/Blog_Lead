@@ -31,51 +31,15 @@ export async function POST(req: NextRequest) {
     await updateCampaign(campaignId, { status: "running" }).catch(() => {});
   }
 
-  // Auto-continuation from QStash (no browser to stream to): run the next chunk via after()
-  // and return immediately. The UI tracks progress by polling /api/pipeline/live.
-  if (body.auto === true) {
-    after(async () => {
-      try { await runDiscoveryPipeline(undefined, { campaignId, customKeywords, resume }); }
-      catch { if (campaignId) await updateCampaign(campaignId, { status: "done" }).catch(() => {}); }
-    });
-    return NextResponse.json({ continued: true });
-  }
-
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      let closed = false;
-      const send = (data: object) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          closed = true; // browser disconnected — pipeline keeps running server-side
-        }
-      };
-
-      try {
-        const { runId, stats } = await runDiscoveryPipeline(
-          (progress) => send(progress),
-          { campaignId, customKeywords, resume }
-        );
-        send({ stage: "done", runId, stats });
-      } catch (e: any) {
-        if (campaignId) await updateCampaign(campaignId, { status: "done" }).catch(() => {});
-        send({ stage: "error", message: e?.message ?? "Unknown error" });
-      } finally {
-        controller.close();
-      }
-    },
+  // Run the pipeline via after() so it's fully independent of the caller's tab/connection:
+  // closing the tab never stops it (Vercel keeps the function alive for after() work, up to
+  // maxDuration; long crawls then auto-continue via QStash). The UI shows progress by polling
+  // /api/pipeline/live (Redis-durable), and the QStash auto-continuation path is identical.
+  after(async () => {
+    try { await runDiscoveryPipeline(undefined, { campaignId, customKeywords, resume }); }
+    catch { if (campaignId) await updateCampaign(campaignId, { status: "done" }).catch(() => {}); }
   });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  });
+  return NextResponse.json({ started: true, auto: body.auto === true });
 }
 
 export async function GET() {

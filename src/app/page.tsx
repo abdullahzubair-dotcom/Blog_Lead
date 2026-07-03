@@ -63,6 +63,8 @@ export default function HomePage() {
   const [isReconnected, setIsReconnected] = useState(false);
   const isReconnectedRef = useRef(false);
   const liveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sawRunningRef = useRef(false);   // have we observed the run actually running yet?
+  const discoverStartRef = useRef(0);    // when we kicked off discovery (startup-race guard)
 
   const setReconnected = (v: boolean) => {
     isReconnectedRef.current = v;
@@ -138,6 +140,7 @@ export default function HomePage() {
       setLiveRun(data);
 
       if (data.isRunning) {
+        sawRunningRef.current = true;
         const evs: PipelineProgressEvent[] = data.bufferedEvents ?? [];
         if (evs.length > 0) setPipelineEvents(evs);
         setPipelineElapsedMs(data.elapsedMs ?? 0);
@@ -148,15 +151,24 @@ export default function HomePage() {
           authors: data.totalAuthors ?? prev.authors ?? 0,
         }));
         if (!isReconnectedRef.current) setReconnected(true);
+      } else if (isReconnectedRef.current && !sawRunningRef.current && discoverStartRef.current && Date.now() - discoverStartRef.current < 30_000) {
+        // Just kicked off — the after() pipeline may not have registered yet. Keep polling
+        // (don't declare "done") until we've actually seen it running, up to a 30s grace.
       } else {
         if (liveRef.current) { clearInterval(liveRef.current); liveRef.current = null; }
-        setIsStopping(false); // always clear — pipeline is no longer running
+        setIsStopping(false);
+        setIsDiscovering(false);
         if (isReconnectedRef.current) {
           setReconnected(false);
-          setPipelineDone(true);
-          loadRunHistory();
-          fetchProspects(true);
-          toast.success("Pipeline finished — prospects updated.");
+          if (sawRunningRef.current) {
+            setPipelineDone(true);
+            loadRunHistory();
+            fetchProspects(true);
+            toast.success("Pipeline finished — prospects updated.");
+          } else {
+            setPipelineError(true); // never started within the grace window
+            toast.error("Discovery didn't start — check the logs and try again.");
+          }
         } else {
           loadRunHistory();
         }
@@ -201,8 +213,12 @@ export default function HomePage() {
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const runDiscovery = async (resume = false) => {
-    setReconnected(false);
+    // Kick the run off server-side (via after()), then drive the UI purely by polling
+    // /api/pipeline/live. The run is independent of this tab — closing it doesn't stop it.
     setIsDiscovering(true);
+    setReconnected(true);          // treat as a polled (not tab-bound) run
+    sawRunningRef.current = false;
+    discoverStartRef.current = Date.now();
     setIsStopping(false);
     setPipelineEvents([]);
     setPipelineDone(false);
@@ -210,14 +226,8 @@ export default function HomePage() {
     setPipelineStats({});
     setActiveTab("pipeline");
     if (resume) setResumableCheckpoint(null);
-    const start = Date.now();
-    setPipelineStartMs(start);
+    setPipelineStartMs(Date.now());
     setPipelineElapsedMs(0);
-
-    if (elapsedRef.current) clearInterval(elapsedRef.current);
-    elapsedRef.current = setInterval(() => {
-      setPipelineElapsedMs(Date.now() - start);
-    }, 1000);
 
     try {
       const body: Record<string, unknown> = resume ? { resume: true } : {};
@@ -227,48 +237,21 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.body) throw new Error("No stream");
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          try {
-            const data = JSON.parse(line.slice(5));
-            if (data.stage === "done") {
-              setPipelineDone(true);
-              setPipelineStats(data.stats ?? {});
-              toast.success(`Discovery complete! ${data.stats?.processed ?? 0} articles processed.`);
-              fetchProspects(true);
-              loadRunHistory();
-            } else if (data.stage === "error") {
-              setPipelineError(true);
-              toast.error(`Discovery failed: ${data.message}`);
-            } else if (data.stage === "stopped") {
-              setPipelineDone(true);
-              setPipelineEvents((prev) => [...prev, data]);
-              toast.info("Pipeline stopped.");
-            } else {
-              setPipelineEvents((prev) => [...prev, data]);
-              if (data.stats) setPipelineStats(data.stats);
-            }
-          } catch {}
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.started === false) {
+        setPipelineError(true);
+        setIsDiscovering(false);
+        setReconnected(false);
+        toast.error(data.reason ?? data.error ?? "Couldn't start discovery.");
+        return;
       }
+      toast.success("Discovery started — it keeps running even if you close this tab.");
+      pollLive(); // begin polling immediately; the polling effect keeps it going
     } catch (e: unknown) {
       setPipelineError(true);
-      toast.error(`Discovery error: ${(e as Error)?.message}`);
-    } finally {
       setIsDiscovering(false);
-      setIsStopping(false);
-      if (elapsedRef.current) clearInterval(elapsedRef.current);
+      setReconnected(false);
+      toast.error(`Discovery error: ${(e as Error)?.message}`);
     }
   };
 
