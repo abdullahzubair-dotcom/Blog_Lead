@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Check, KeyRound, ExternalLink } from "lucide-react";
+import { Loader2, Check, KeyRound, ExternalLink, Send } from "lucide-react";
 import type { UserEmailConfig } from "@/lib/types";
 
 const TIMEZONES = [
@@ -20,6 +20,15 @@ export function UserEmailConfigCard() {
   const [cfg, setCfg] = useState<UserEmailConfig | null>(null);
   const [pw, setPw] = useState("");
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  async function sendTest() {
+    setTesting(true);
+    const res = await fetch("/api/user/email-config/test", { method: "POST" }).then((r) => r.json()).catch(() => ({ ok: false }));
+    if (res.ok) toast.success(`Test email sent to ${cfg?.user_email} — check your inbox.`);
+    else toast.error(res.error ?? "Test failed — double-check your app password.");
+    setTesting(false);
+  }
 
   useEffect(() => {
     fetch("/api/user/email-config").then((r) => r.ok ? r.json() : null).then((d) => { if (d) setCfg(d); }).catch(() => {});
@@ -98,7 +107,11 @@ export function UserEmailConfigCard() {
           </div>
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={sendTest} disabled={testing || !cfg.hasPassword} title={cfg.hasPassword ? "Send a test email to yourself" : "Save an app password first"}>
+            {testing ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Send className="h-4 w-4 mr-1.5" />}
+            Send test email
+          </Button>
           <Button onClick={save} disabled={saving}>
             {saving ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Check className="h-4 w-4 mr-1.5" />}
             Save sending settings
