@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock, ChevronRight } from "lucide-react";
+import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock, ChevronRight, Reply, MessageSquareCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,7 @@ interface StatusEmail {
   scheduled_at?: string;
   sent_at?: string;
   error?: string;
+  replied_at?: string | null;
   tz: string;
   local_label: string | null;
   guess?: boolean;
@@ -35,15 +36,16 @@ interface StatusEmail {
 
 interface Status {
   counts: Record<string, number>;
+  replyRate: number;
   upcoming: StatusEmail[];
   recent: StatusEmail[];
   total: number;
 }
 
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
+function Stat({ label, value, color, suffix, title }: { label: string; value: number; color: string; suffix?: string; title?: string }) {
   return (
-    <div className="rounded-xl border border-border bg-card px-5 py-4">
-      <p className={`text-3xl font-bold tabular-nums ${color}`}>{value}</p>
+    <div className="rounded-xl border border-border bg-card px-5 py-4" title={title}>
+      <p className={`text-3xl font-bold tabular-nums ${color}`}>{value}{suffix}</p>
       <p className="text-xs text-muted-foreground mt-1">{label}</p>
     </div>
   );
@@ -92,6 +94,22 @@ export default function SendingPage() {
     setSendingNowId(null);
     if (res.ok) toast.success(`Sent to ${e.author_name}.`);
     else toast.error(res.error ?? "Send failed.");
+    await load();
+  }
+
+  // Toggle a manual "they replied" mark on a sent/failed email — no inbox integration,
+  // so this is tracked by hand and feeds the reply-rate stat above.
+  const [togglingReplyId, setTogglingReplyId] = useState<string | null>(null);
+  async function toggleReplied(e: StatusEmail) {
+    const next = e.replied_at ? null : new Date().toISOString();
+    setTogglingReplyId(e.id);
+    setStatus((s) => s ? { ...s, recent: s.recent.map((r) => r.id === e.id ? { ...r, replied_at: next } : r) } : s);
+    await fetch(`/api/emails/${e.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ replied_at: next }),
+    }).catch(() => {});
+    setTogglingReplyId(null);
     await load();
   }
 
@@ -214,6 +232,8 @@ export default function SendingPage() {
   const scheduled = c.scheduled ?? 0;
   const sent = c.sent ?? 0;
   const failed = c.failed ?? 0;
+  const replied = c.replied ?? 0;
+  const replyRate = status?.replyRate ?? 0;
   const nextUp = status?.upcoming?.[0];
 
   // Group the queue by who's sending (each user sends their own). Expandable per sender.
@@ -271,11 +291,14 @@ export default function SendingPage() {
         </div>
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* Stat cards — sent/failed/replied only count emails with a sender (per-user sending),
+          so legacy emails from before that feature existed don't skew the reply rate. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Stat label="Scheduled" value={scheduled} color="text-blue-400" />
         <Stat label="Sent" value={sent} color="text-green-400" />
         <Stat label="Failed" value={failed} color="text-red-400" />
+        <Stat label="Replied" value={replied} color="text-violet-400" />
+        <Stat label="Reply rate" value={replyRate} suffix="%" color="text-violet-400" title="Replies ÷ successfully sent (emails with no sender on file don't count)" />
         <Stat label="Drafts / ready" value={(c.draft ?? 0) + (c.ready ?? 0)} color="text-muted-foreground" />
       </div>
 
@@ -405,6 +428,14 @@ export default function SendingPage() {
                       </Badge>
                       {e.status === "sent" && e.sent_at && <p className="text-[10px] text-muted-foreground mt-0.5">{sentLabel(e.sent_at)}</p>}
                     </div>
+                    <Button
+                      variant="ghost" size="sm" className={`h-7 w-7 p-0 ${e.replied_at ? "text-violet-400" : "text-muted-foreground/50"}`}
+                      title={e.replied_at ? `Marked replied ${sentLabel(e.replied_at)} — click to unmark` : "Mark as replied"}
+                      disabled={togglingReplyId === e.id}
+                      onClick={() => toggleReplied(e)}
+                    >
+                      {togglingReplyId === e.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : e.replied_at ? <MessageSquareCheck className="h-3.5 w-3.5" /> : <Reply className="h-3.5 w-3.5" />}
+                    </Button>
                     <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="Read the email that was sent" onClick={() => openReader(e)}>
                       Read
                     </Button>

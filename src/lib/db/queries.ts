@@ -1299,6 +1299,7 @@ export async function updateOutreachEmail(id: string, data: {
   scheduled_at?: string | null; // null = unschedule (cancel a queued send)
   sent_at?: string | null;
   error?: string | null;
+  replied_at?: string | null; // manual "they replied" mark — null to unmark
 }): Promise<void> {
   const { error } = await supabaseAdmin.from("outreach_emails").update(data).eq("id", id);
   if (error) throw error;
@@ -1637,22 +1638,33 @@ export async function getSendingStatus(workflowId?: string): Promise<{
 }> {
   const base = () => {
     let q = supabaseAdmin.from("outreach_emails").select(
-      "id, workflow_id, author_id, sender_email, subject, status, scheduled_at, sent_at, error, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
+      "id, workflow_id, author_id, sender_email, subject, status, scheduled_at, sent_at, error, replied_at, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
     );
     if (workflowId) q = q.eq("workflow_id", workflowId) as any;
     return q;
   };
 
+  // Sent/failed history only counts emails that actually have a sender_email — i.e. ones
+  // sent under per-user sending. Older rows from before that existed have no sender
+  // identity and would skew reply-rate/sent-failed stats, so they're excluded here.
   const [{ data: all }, { data: upcoming }, { data: recent }] = await Promise.all([
     base(),
     base().eq("status", "scheduled").order("scheduled_at", { ascending: true }).limit(50),
-    base().in("status", ["sent", "failed"]).order("sent_at", { ascending: false }).limit(30),
+    base().in("status", ["sent", "failed"]).not("sender_email", "is", null).order("sent_at", { ascending: false }).limit(200),
   ]);
 
-  const counts: Record<string, number> = { draft: 0, ready: 0, scheduled: 0, sent: 0, failed: 0 };
-  for (const e of all ?? []) counts[(e as any).status] = (counts[(e as any).status] ?? 0) + 1;
+  const counts: Record<string, number> = { draft: 0, ready: 0, scheduled: 0, sent: 0, failed: 0, replied: 0 };
+  for (const e of all ?? []) {
+    if ((e as any).status === "draft" || (e as any).status === "ready" || (e as any).status === "scheduled") {
+      counts[(e as any).status] = (counts[(e as any).status] ?? 0) + 1;
+    }
+  }
+  for (const e of recent ?? []) {
+    counts[(e as any).status] = (counts[(e as any).status] ?? 0) + 1;
+    if ((e as any).replied_at) counts.replied++;
+  }
 
-  return { counts, upcoming: upcoming ?? [], recent: recent ?? [] };
+  return { counts, upcoming: upcoming ?? [], recent: (recent ?? []).slice(0, 30) };
 }
 
 // Emails that are due to send now (scheduled and their time has passed).

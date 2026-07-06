@@ -27,14 +27,21 @@ export async function GET(req: NextRequest) {
       scheduled_at: e.scheduled_at,
       sent_at: e.sent_at,
       error: e.error,
+      replied_at: e.replied_at ?? null,
       tz,
       local_label: when ? localTimeLabel(when, tz) : null,
       guess: isGuessSource(mailto?.source),
     };
   };
 
+  // Reply rate is of SUCCESSFULLY SENT emails only — a failed send can't have gotten a
+  // reply, so it's excluded from the denominator even if someone manually checked it.
+  const repliedAmongSent = recent.filter((e: any) => e.status === "sent" && e.replied_at).length;
+  const replyRate = counts.sent > 0 ? Math.round((repliedAmongSent / counts.sent) * 1000) / 10 : 0;
+
   return NextResponse.json({
     counts,
+    replyRate,
     upcoming: upcoming.map(enrich),
     recent: recent.map(enrich),
     total: Object.values(counts).reduce((a, b) => a + b, 0),

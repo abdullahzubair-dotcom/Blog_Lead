@@ -264,6 +264,8 @@ export interface OutreachEmail {
   scheduled_at?: string;
   sent_at?: string;
   error?: string;
+  sender_email?: string | null;
+  replied_at?: string | null;
   created_at: string;
   author?: Author;
 }
