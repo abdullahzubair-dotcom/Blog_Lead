@@ -57,6 +57,7 @@ export interface DiscoveryOptions {
     usedQueries: string[];
     round: number;
     rssComplete: boolean;
+    discoveryDone?: boolean;
     oldRunId?: string;
   };
 }
@@ -160,7 +161,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       });
       await queue.onIdle();
       if (signal.aborted) { emit("stopped", `Pipeline stopped by user.`); finishBuffer(); await finishPipelineRun(run.id, "completed", { ...stats, stopped: 1 }); return { runId: run.id, stats }; }
-      await saveCheckpoint({ runId: run.id, round: 0, usedQueries: [], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+      await saveCheckpoint({ runId: run.id, round: 0, usedQueries: [], rssComplete: true, discoveryDone: false, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
     } else if (resume?.rssComplete) {
       harvLog("rss", "Skipping RSS — already completed before interruption");
     }
@@ -180,8 +181,13 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     const { supabaseAdmin } = await import("@/lib/db/supabase");
 
-    const MIN_NEW_PER_ROUND = 15; // stop if a round yields fewer than this
-    while (round < MAX_QUERY_ROUNDS && !signal.aborted && !timeUp()) {
+    const MIN_NEW_PER_ROUND = 15; // stop once rounds are consistently yielding fewer than this
+    let weakRounds = 0; // consecutive rounds under MIN_NEW_PER_ROUND — require 2 in a row to stop,
+                         // so one unlucky round doesn't kill an otherwise-productive run
+    if (resume?.discoveryDone) {
+      emit("discover", "Discovery already complete from a previous run — resuming article processing only");
+    }
+    while (!resume?.discoveryDone && round < MAX_QUERY_ROUNDS && !signal.aborted && !timeUp()) {
       // Count new pending hits so far
       const { count: pendingCount } = await supabaseAdmin
         .from("discovery_hits")
@@ -209,9 +215,9 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
       emit("discover", `Round ${round}: ${freshQueries.length} fresh queries — ${freshQueries.slice(0, 3).join(" · ")}…`);
 
-      // ── GDELT ────────────────────────────────────────────────────────────────
+      // ── GDELT (free API) ───────────────────────────────────────────────────────
       if (harvesterMap.gdelt) {
-        for (const q of freshQueries.slice(0, 10)) {
+        for (const q of freshQueries.slice(0, 20)) {
           queue.add(async () => {
             if (signal.aborted) return;
             harvLog("gdelt", `"${q}"`, q);
@@ -225,7 +231,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
       // ── HACKER NEWS ──────────────────────────────────────────────────────────
       if (harvesterMap.hackernews) {
-        for (const q of freshQueries.slice(0, 5)) {
+        for (const q of freshQueries.slice(0, 8)) {
           queue.add(async () => {
             if (signal.aborted) return;
             const hits = await hnHarvester.run(q, { signal }).catch(() => []);
@@ -238,7 +244,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
       // ── REDDIT ───────────────────────────────────────────────────────────────
       if (harvesterMap.reddit) {
-        for (const q of freshQueries.slice(0, 4)) {
+        for (const q of freshQueries.slice(0, 6)) {
           queue.add(async () => {
             if (signal.aborted) return;
             harvLog("reddit", `Tree: "${q}"`, q);
@@ -252,7 +258,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
       // ── WORDPRESS ────────────────────────────────────────────────────────────
       if (harvesterMap.wordpress) {
-        for (const q of freshQueries.slice(0, 3)) {
+        for (const q of freshQueries.slice(0, 5)) {
           queue.add(async () => {
             if (signal.aborted) return;
             const hits = await wordpressHarvester.run(q, { domains: wpDomains, signal }).catch(() => []);
@@ -278,8 +284,8 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         harvLog("brave", "No BRAVE_SEARCH_API_KEY — skipping");
       }
 
-      // ── GOOGLE NEWS ──────────────────────────────────────────────────────────
-      for (const q of freshQueries.slice(0, 10)) {
+      // ── GOOGLE NEWS (free) ─────────────────────────────────────────────────────
+      for (const q of freshQueries.slice(0, 20)) {
         queue.add(async () => {
           if (signal.aborted) return;
           const hits = await googleNewsHarvester.run(q, { signal }).catch(() => []);
@@ -288,8 +294,8 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         });
       }
 
-      // ── DUCKDUCKGO (web search) ───────────────────────────────────────────────
-      for (const q of freshQueries.slice(0, 10)) {
+      // ── DUCKDUCKGO (free web search) ─────────────────────────────────────────────
+      for (const q of freshQueries.slice(0, 20)) {
         queue.add(async () => {
           if (signal.aborted) return;
           const hits = await duckduckgoHarvester.run(q, { signal }).catch(() => []);
@@ -337,11 +343,17 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       const roundNewHits = stats.hitsDiscovered - hitsAtRoundStart;
 
       // Save checkpoint after every round so we can resume if interrupted
-      await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+      await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, discoveryDone: false, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
 
       if (round > 1 && roundNewHits < MIN_NEW_PER_ROUND) {
-        emit("discover", `Round ${round} yielded only ${roundNewHits} new articles — diminishing returns, stopping discovery early`);
-        break;
+        weakRounds++;
+        if (weakRounds >= 2) {
+          emit("discover", `Round ${round} yielded only ${roundNewHits} new articles — 2 rounds in a row with diminishing returns, stopping discovery early`);
+          break;
+        }
+        emit("discover", `Round ${round} yielded only ${roundNewHits} new articles — giving it one more round before stopping`);
+      } else {
+        weakRounds = 0;
       }
 
       if (signal.aborted) {
@@ -423,7 +435,12 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       const { count: stillPending } = await supabaseAdmin
         .from("discovery_hits").select("id", { count: "exact", head: true }).eq("processed", false);
       if ((stillPending ?? 0) > 0) {
-        await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
+        // Discovery (the round loop above) has already fully finished by this point — it's
+        // only Stage 2 profiling that ran out of time. Mark discoveryDone so a resume skips
+        // straight to processing instead of re-entering the round loop (which would otherwise
+        // misread this unprofiled backlog as "not enough articles found yet" and start a whole
+        // new round of harvester queries — the exact bug that looked like an unrequested restart).
+        await saveCheckpoint({ runId: run.id, round, usedQueries: [...usedQueries], rssComplete: true, discoveryDone: true, campaignId: options?.campaignId, customKeywords: options?.customKeywords, savedAt: new Date().toISOString() });
         const handed = await qstashPublish("/api/discover", { resume: true, auto: true });
         emit(handed ? "process" : "complete", handed
           ? `Time budget reached — ${stillPending} articles remaining, continuing in a new run…`
@@ -530,7 +547,7 @@ function isLikelyEnglish(url: string, title?: string): boolean {
   return true;
 }
 
-async function processHit(hitId: string, url: string, source: string, seeds: SeedTool[], ourProductNames: string[] = [], abortSignal?: AbortSignal): Promise<string | undefined> {
+export async function processHit(hitId: string, url: string, source: string, seeds: SeedTool[], ourProductNames: string[] = [], abortSignal?: AbortSignal): Promise<string | undefined> {
   let host = "";
   try { host = new URL(url).hostname; } catch { return; }
   if (isBlockedUrl(url)) { await markHitProcessed(hitId).catch(() => {}); return; } // video/social — not an article

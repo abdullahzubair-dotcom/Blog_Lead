@@ -67,7 +67,12 @@ Output ONLY the 30 queries, one per line.`);
       return !usedQueries.some((u) => u.toLowerCase().trim() === norm);
     });
 
-    if (fresh.length >= 10) return dedupe([...fresh, ...fallbackQueries(competitors)]);
+    // Only fall back to the static template list when the LLM genuinely produced too few
+    // fresh queries. On success, return the fresh ones alone — appending the ~70-query
+    // fallback list here used to burn it as "used" every round even though harvesters only
+    // ever search the first ~10 of a round's batch, so it was never actually searched, just
+    // wasted (and unavailable as a real fallback later if the LLM call starts failing).
+    if (fresh.length >= 10) return dedupe(fresh);
     return fallbackQueries(competitors);
   } catch (e) {
     console.warn("[generateDiscoveryQueries] Claude failed, using fallback:", (e as Error).message);

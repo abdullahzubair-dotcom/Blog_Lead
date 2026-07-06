@@ -116,13 +116,17 @@ async function runGeneration(workflowId: string, templateId?: string) {
         const opener = await generateOpener(author.full_name, pubName, p.articles ?? [], tools, template?.guidance);
 
         const firstArticle = [...(p.articles ?? [])].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
+        // Append a real, unmangled link to the article the opener references — appended
+        // programmatically rather than trusted to the LLM so the URL always comes through intact.
+        const articleLink: string | undefined = firstArticle?.url_canonical;
+        const customLine = articleLink ? `${opener}\n\nI read this at: ${articleLink}` : opener;
         const vars: Record<string, string> = {
           author_name: author.full_name,
           pub_name: pubName,
           article_title: firstArticle?.title ?? "",
           article_date: firstArticle?.published_at?.slice(0, 10) ?? "",
           tool_mentioned: tools[0] ?? "AI tools",
-          custom_line: opener,
+          custom_line: customLine,
         };
 
         // Fill template, drop any leftover unfilled {{tokens}}, and tidy whitespace.

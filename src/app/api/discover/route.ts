@@ -9,13 +9,13 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   let campaignId = body.campaign_id as string | undefined;
   let customKeywords: string[] | undefined;
-  let resume: { usedQueries: string[]; round: number; rssComplete: boolean; oldRunId?: string } | undefined;
+  let resume: { usedQueries: string[]; round: number; rssComplete: boolean; discoveryDone?: boolean; oldRunId?: string } | undefined;
 
   // Resume mode — load checkpoint and continue from where we left off
   if (body.resume === true) {
     const cp = await findLatestCheckpoint();
     if (cp) {
-      resume = { usedQueries: cp.usedQueries, round: cp.round, rssComplete: cp.rssComplete, oldRunId: cp.runId };
+      resume = { usedQueries: cp.usedQueries, round: cp.round, rssComplete: cp.rssComplete, discoveryDone: cp.discoveryDone, oldRunId: cp.runId };
       if (!campaignId && cp.campaignId) campaignId = cp.campaignId;
       if (!customKeywords && cp.customKeywords) customKeywords = cp.customKeywords;
     }

@@ -13,6 +13,11 @@ export interface PipelineCheckpoint {
   round: number;
   usedQueries: string[];
   rssComplete: boolean;
+  // True once the discover round-loop has fully finished (target reached / diminishing
+  // returns / no new queries / max rounds) — set only when Stage 2 (profiling) is what ran
+  // out of time, so a resume skips straight to processing instead of re-entering the round
+  // loop and mistaking leftover profiling backlog for "not enough articles found yet".
+  discoveryDone?: boolean;
   campaignId?: string;
   customKeywords?: string[];
   savedAt: string;
