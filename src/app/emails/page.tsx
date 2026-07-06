@@ -55,6 +55,7 @@ const PLACEHOLDER_DOCS = [
   ["{{article_date}}", "Publication date"],
   ["{{tool_mentioned}}", "First AI tool they mentioned"],
   ["{{custom_line}}", "AI-generated personalized opener"],
+  ["{{article_link}}", "Link to the article referenced above — delete the whole line if you'd rather not include a link"],
 ];
 
 // One merged row per prospect — carries their article context, target email,
@@ -384,7 +385,7 @@ export default function EmailsPage() {
         setTemplateForm({
           name: "",
           subject: "Loved your recent piece on {{tool_mentioned}}",
-          body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your audience would love to hear about what we've been building.\n\nWould you be open to a quick chat, or to covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`,
+          body: `Hi {{author_name}},\n\n{{custom_line}}\n\nI read this at: {{article_link}}\n\nI work at ImagineArt, one of the leading AI image generation platforms. I think your audience would love to hear about what we've been building.\n\nWould you be open to a quick chat, or to covering us in a future piece?\n\nBest,\nAbdullah\nImagineArt`,
           guidance: "",
           channel: "email",
         });
@@ -841,6 +842,12 @@ export default function EmailsPage() {
                 ))}
               </div>
             </div>
+            {templateForm.channel !== "linkedin" && (
+              <p className="text-xs text-amber-500/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                Heads up: including a link in a cold email increases the chance it lands in spam. The default template has one
+                ("I read this at: {"{{article_link}}"}") — delete that line if you'd rather send link-free.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setEditingTemplate(null); setCreatingTemplate(false); }}>Cancel</Button>

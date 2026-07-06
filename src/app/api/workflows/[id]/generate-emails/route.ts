@@ -91,6 +91,14 @@ function fillTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 }
 
+// Drops any line containing {{token}} entirely when there's nothing to fill it with — e.g.
+// "I read this at: {{article_link}}" should disappear as a whole line when there's no
+// article, not leave a dangling "I read this at: " with nothing after it.
+function dropLineIfEmpty(template: string, token: string, value: string): string {
+  if (value) return template;
+  return template.split("\n").filter((line) => !line.includes(`{{${token}}}`)).join("\n");
+}
+
 // Runs the actual generation loop DETACHED from the request so it survives tab close.
 // Overwrites every included prospect's email (upsert on workflow_id+author_id).
 async function runGeneration(workflowId: string, templateId?: string) {
@@ -116,23 +124,24 @@ async function runGeneration(workflowId: string, templateId?: string) {
         const opener = await generateOpener(author.full_name, pubName, p.articles ?? [], tools, template?.guidance);
 
         const firstArticle = [...(p.articles ?? [])].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
-        // Append a real, unmangled link to the article the opener references — appended
-        // programmatically rather than trusted to the LLM so the URL always comes through intact.
-        const articleLink: string | undefined = firstArticle?.url_canonical;
-        const customLine = articleLink ? `${opener}\n\nI read this at: ${articleLink}` : opener;
+        // A real, unmangled link to the article the opener references — filled as its own
+        // placeholder (not glued onto the opener text) so a template author can see and
+        // delete the whole "I read this at: {{article_link}}" line if they don't want a link.
+        const articleLink: string = firstArticle?.url_canonical ?? "";
         const vars: Record<string, string> = {
           author_name: author.full_name,
           pub_name: pubName,
           article_title: firstArticle?.title ?? "",
           article_date: firstArticle?.published_at?.slice(0, 10) ?? "",
           tool_mentioned: tools[0] ?? "AI tools",
-          custom_line: customLine,
+          custom_line: opener,
+          article_link: articleLink,
         };
 
         // Fill template, drop any leftover unfilled {{tokens}}, and tidy whitespace.
-        const clean = (s: string) => sanitize(fillTemplate(s, vars).replace(/\{\{\w+\}\}/g, "").replace(/\n{3,}/g, "\n\n"));
+        const clean = (s: string) => sanitize(fillTemplate(dropLineIfEmpty(s, "article_link", articleLink), vars).replace(/\{\{\w+\}\}/g, "").replace(/\n{3,}/g, "\n\n"));
         const subject = clean(template?.subject ?? "Quick note on your recent piece");
-        const body = clean(template?.body ?? `Hi {{author_name}},\n\n{{custom_line}}\n\nBest,\nAbdullah`);
+        const body = clean(template?.body ?? `Hi {{author_name}},\n\n{{custom_line}}\n\nI read this at: {{article_link}}\n\nBest,\nAbdullah`);
 
         await upsertOutreachEmail({ workflow_id: workflowId, author_id: p.author_id, template_id: templateId ?? undefined, subject, body, status: "ready" });
         await bumpGen(workflowId);
