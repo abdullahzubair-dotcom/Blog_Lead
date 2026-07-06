@@ -27,12 +27,14 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
   const fail = (res: Response) => onError?.(`${provider} HTTP ${res.status}`);
   try {
     if (provider === "tavily") {
-      const { trackTavilyCall, flagTavilyError } = await import("./tavilyUsage");
+      const { trackTavilyCall, flagTavilyError, getTavilyKey } = await import("./tavilyUsage");
       void trackTavilyCall(); // count toward the monthly-usage banner
+      // An admin-set override (changeable in-app, no redeploy) takes priority over the env var.
+      const apiKey = await getTavilyKey();
       const res = await fetch("https://api.tavily.com/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: process.env.TAVILY_API_KEY, query, max_results: count, search_depth: "basic" }),
+        body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: "basic" }),
         signal: sig,
       });
       if (!res.ok) {

@@ -12,7 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { X, Plus, Pencil, Check, Target, Swords, Compass, Hash, Brain, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { X, Plus, Pencil, Check, Target, Swords, Compass, Hash, Brain, CheckCircle2, XCircle, Clock, Key, Loader2 } from "lucide-react";
 
 export default function AdminPage() {
   const [seeds, setSeeds] = useState<SeedTool[]>([]);
@@ -44,6 +44,43 @@ export default function AdminPage() {
   const [newSupprValue, setNewSupprValue] = useState("");
   const [newSupprReason, setNewSupprReason] = useState("");
 
+  // Tavily API key override
+  const [tavilyKeyInput, setTavilyKeyInput] = useState("");
+  const [tavilyStatus, setTavilyStatus] = useState<{ hasOverride: boolean; usage: { enabled: boolean; used: number; limit: number; near: boolean; over: boolean; error: { detail: string; at: number } | null } } | null>(null);
+  const [savingTavilyKey, setSavingTavilyKey] = useState(false);
+  const [clearingTavilyKey, setClearingTavilyKey] = useState(false);
+
+  const loadTavilyStatus = async () => {
+    const data = await fetch("/api/admin/tavily-key").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (data) setTavilyStatus(data);
+  };
+
+  const saveTavilyKey = async () => {
+    if (!tavilyKeyInput.trim()) return;
+    setSavingTavilyKey(true);
+    const res = await fetch("/api/admin/tavily-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: tavilyKeyInput.trim() }),
+    });
+    if (res.ok) {
+      toast.success("Tavily key updated — takes effect immediately, no redeploy needed.");
+      setTavilyKeyInput("");
+      await loadTavilyStatus();
+    } else {
+      toast.error("Failed to save key.");
+    }
+    setSavingTavilyKey(false);
+  };
+
+  const clearTavilyKey = async () => {
+    setClearingTavilyKey(true);
+    await fetch("/api/admin/tavily-key", { method: "DELETE" });
+    toast.success("Reverted to the TAVILY_API_KEY environment variable.");
+    await loadTavilyStatus();
+    setClearingTavilyKey(false);
+  };
+
   const reload = async () => {
     const [s, h, sup, r, ls] = await Promise.all([
       fetch("/api/seeds").then((r) => r.json()),
@@ -72,6 +109,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     reload().catch(() => toast.error("Failed to load admin data"));
+    loadTavilyStatus();
   }, []);
 
   // ── Direction: Our Brand ───────────────────────────────────────────────────
@@ -209,12 +247,13 @@ export default function AdminPage() {
       </div>
 
       <Tabs defaultValue="direction" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="direction">Direction</TabsTrigger>
           <TabsTrigger value="seeds">All Seeds</TabsTrigger>
           <TabsTrigger value="harvesters">Harvesters</TabsTrigger>
           <TabsTrigger value="suppression">Suppression</TabsTrigger>
           <TabsTrigger value="pipeline">Logs</TabsTrigger>
+          <TabsTrigger value="apikeys">API Keys</TabsTrigger>
           <TabsTrigger value="learning" className="flex items-center gap-1.5">
             <Brain className="h-3.5 w-3.5" />
             Learning
@@ -534,6 +573,63 @@ export default function AdminPage() {
                   </div>
                 </div>
               ))}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── API KEYS ── */}
+        <TabsContent value="apikeys" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Key className="h-4 w-4" />Tavily Search API Key</CardTitle>
+              <CardDescription>
+                Swap the Tavily key at any time — takes effect immediately, no redeploy needed. Useful when the free-tier
+                monthly quota (1,000 searches) runs out.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {tavilyStatus && (
+                <div className="flex items-center gap-3 flex-wrap text-sm">
+                  <Badge variant="outline" className={
+                    !tavilyStatus.usage.enabled ? "text-muted-foreground" :
+                    tavilyStatus.usage.over ? "text-red-400 border-red-500/30 bg-red-500/10" :
+                    tavilyStatus.usage.near ? "text-amber-400 border-amber-500/30 bg-amber-500/10" :
+                    "text-green-400 border-green-500/30 bg-green-500/10"
+                  }>
+                    {tavilyStatus.usage.enabled ? `${tavilyStatus.usage.used}/${tavilyStatus.usage.limit} used this month` : "Not configured"}
+                  </Badge>
+                  <Badge variant="outline" className="text-muted-foreground">
+                    {tavilyStatus.hasOverride ? "Using an admin-set override key" : "Using the TAVILY_API_KEY environment variable"}
+                  </Badge>
+                  {tavilyStatus.usage.error && (
+                    <span className="text-xs text-red-400">Last error: {tavilyStatus.usage.error.detail}</span>
+                  )}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  placeholder="tvly-..."
+                  value={tavilyKeyInput}
+                  onChange={(e) => setTavilyKeyInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveTavilyKey(); }}
+                />
+                <Button onClick={saveTavilyKey} disabled={!tavilyKeyInput.trim() || savingTavilyKey} className="bg-violet-600 hover:bg-violet-700 text-white shrink-0">
+                  {savingTavilyKey && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                  Save
+                </Button>
+                {tavilyStatus?.hasOverride && (
+                  <Button variant="outline" onClick={clearTavilyKey} disabled={clearingTavilyKey} className="shrink-0">
+                    {clearingTavilyKey && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                    Revert to env var
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Get a free key (1,000 searches/mo, no card) at{" "}
+                <a href="https://tavily.com" target="_blank" rel="noreferrer" className="text-violet-400 hover:underline">tavily.com</a>.
+                Saving resets the usage counter shown here and in the navbar, since a new key starts its own quota.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>

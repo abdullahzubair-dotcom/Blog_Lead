@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 import { useTheme } from "next-themes";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Sun, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -24,6 +26,28 @@ const PAGE_NAMES: Record<string, string> = {
   workflows: "Workflows",
   emails: "Emails",
 };
+
+// Persistent "Tavily 340/1000" pill — the steady-state version of KeyHealthBanner's
+// conditional warning, always visible so usage doesn't quietly creep up on you unnoticed.
+function TavilyUsagePill() {
+  const [usage, setUsage] = useState<{ enabled: boolean; used: number; limit: number; near: boolean; over: boolean } | null>(null);
+
+  useEffect(() => {
+    const load = () => fetch("/api/health/keys").then((r) => (r.ok ? r.json() : null)).then((d) => d && setUsage(d.tavily)).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!usage?.enabled) return null;
+  const tone = usage.over ? "text-red-400 border-red-500/30 bg-red-500/10" : usage.near ? "text-amber-400 border-amber-500/30 bg-amber-500/10" : "text-muted-foreground";
+  return (
+    <Badge variant="outline" className={`hidden sm:flex items-center gap-1.5 text-xs font-normal ${tone}`} title="Tavily search API usage this month">
+      <Search className="h-3 w-3" />
+      {usage.used}/{usage.limit}
+    </Badge>
+  );
+}
 
 export function TopNav() {
   const pathname = usePathname();
@@ -56,6 +80,8 @@ export function TopNav() {
 
         {/* Right side */}
         <div className="flex items-center gap-2">
+          <TavilyUsagePill />
+
           {/* Theme toggle */}
           <Button
             variant="ghost"
