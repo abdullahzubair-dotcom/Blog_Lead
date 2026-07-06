@@ -45,13 +45,13 @@ IMPORTANT: an article that merely REPORTS ON, EXPLAINS, or CRITIQUES one of thes
 Title: ${title.slice(0, 150)}
 Excerpt: ${text.slice(0, 600)}
 
-Reply in this exact format only, nothing else:
-CATEGORY=NONE SEVERITY=NONE
+Reply in this exact format only, nothing else, all on one line:
+CATEGORY=NONE SEVERITY=NONE REASON=none
 or
-CATEGORY=NSFW SEVERITY=HIGH
-(CATEGORY one of: NONE, NSFW, HATE_VIOLENCE_ILLEGAL, POLITICAL_CONTROVERSY. SEVERITY one of: NONE, LOW, MEDIUM, HIGH.)`,
+CATEGORY=NSFW SEVERITY=HIGH REASON=<why, under 12 words, specific to this article>
+(CATEGORY one of: NONE, NSFW, HATE_VIOLENCE_ILLEGAL, POLITICAL_CONTROVERSY. SEVERITY one of: NONE, LOW, MEDIUM, HIGH. REASON is a short human-readable explanation someone could read instead of opening the article.)`,
         }],
-        max_tokens: 20,
+        max_tokens: 60,
         temperature: 0,
       }),
       signal: abortSignal ? AbortSignal.any([abortSignal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
@@ -63,11 +63,17 @@ CATEGORY=NSFW SEVERITY=HIGH
     const reply = (data.choices?.[0]?.message?.content ?? "").trim();
     const catMatch = reply.match(/CATEGORY=(NONE|NSFW|HATE_VIOLENCE_ILLEGAL|POLITICAL_CONTROVERSY)/i);
     const sevMatch = reply.match(/SEVERITY=(NONE|LOW|MEDIUM|HIGH)/i);
+    const reasonMatch = reply.match(/REASON=(.+)$/i);
     const cat = catMatch?.[1]?.toUpperCase();
     const sev = sevMatch?.[1]?.toUpperCase();
+    const reason = reasonMatch?.[1]?.trim().replace(/\.$/, "");
 
     if (!cat || cat === "NONE" || !sev || sev === "NONE") return CLEAN;
-    return { category: cat.toLowerCase() as SafetyCategory, severity: sev.toLowerCase() as SafetySeverity };
+    return {
+      category: cat.toLowerCase() as SafetyCategory,
+      severity: sev.toLowerCase() as SafetySeverity,
+      reason: reason && reason.toLowerCase() !== "none" ? reason : undefined,
+    };
   } catch {
     return CLEAN; // network/timeout — fail open, never block the pipeline
   }
@@ -84,4 +90,26 @@ export function computeSafetyScore(flags: { category: SafetyCategory; severity: 
     score -= weight;
   }
   return Math.max(0, Math.min(100, score));
+}
+
+const CATEGORY_LABEL: Record<SafetyCategory, string> = {
+  nsfw: "NSFW/sexual content",
+  hate_violence_illegal: "hate/violence/illegal content",
+  political_controversy: "political or religious controversy",
+};
+
+// One human-readable sentence explaining an author's score — so you don't have to open
+// each flagged article to see why. Returns null when there's nothing to explain (clean).
+export function buildSafetySummary(
+  score: number,
+  flags: { category: SafetyCategory; severity: SafetySeverity; reason?: string | null }[],
+): string | null {
+  if (flags.length === 0) return null;
+  const shown = flags.slice(0, 3).map((f) => {
+    const label = CATEGORY_LABEL[f.category] ?? f.category;
+    return f.reason ? `${label} (${f.severity}) — ${f.reason}` : `${label} (${f.severity})`;
+  });
+  const more = flags.length > 3 ? `; and ${flags.length - 3} more` : "";
+  const noun = flags.length === 1 ? "post" : "posts";
+  return `Score ${score}/100 — ${flags.length} flagged ${noun}: ${shown.join("; ")}${more}.`;
 }

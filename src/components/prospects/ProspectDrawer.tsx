@@ -187,6 +187,10 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
                     {tone.label} · {author.safety_score}/100
                   </Badge>
                 </div>
+                {/* Explains the score in one sentence — no need to open the flagged posts to see why */}
+                {author.safety_summary && (
+                  <p className="text-xs text-muted-foreground leading-relaxed pt-1">{author.safety_summary}</p>
+                )}
                 {(flaggedContent?.length ?? 0) > 0 && (
                   <div className="space-y-1.5 pt-1">
                     {flaggedContent!.map((f) => (
@@ -197,6 +201,7 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
                             <span className="text-red-400 font-medium">{SAFETY_CATEGORY_LABEL[f.category] ?? f.category}</span>
                             {" "}({f.severity})
                           </p>
+                          {f.reason && <p className="text-muted-foreground/80 italic">{f.reason}</p>}
                           {f.article?.title && (
                             f.article.url_canonical
                               ? <a href={f.article.url_canonical} target="_blank" rel="noreferrer" className="text-foreground hover:underline truncate block">{f.article.title}</a>

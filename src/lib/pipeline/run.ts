@@ -732,7 +732,7 @@ export async function processHit(hitId: string, url: string, source: string, see
     try {
       const safety = await classifyContentSafety(meta.title ?? "", text, abortSignal);
       if (safety.category && safety.severity) {
-        await insertFlaggedContent({ author_id: authorRow.id, article_id: articleRow.id, category: safety.category, severity: safety.severity });
+        await insertFlaggedContent({ author_id: authorRow.id, article_id: articleRow.id, category: safety.category, severity: safety.severity, reason: safety.reason });
         await recomputeAuthorSafetyScore(authorRow.id);
       }
       await markArticleSafetyChecked(articleRow.id);

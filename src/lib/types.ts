@@ -23,6 +23,7 @@ export interface Author {
   description?: string;
   source?: string;
   safety_score?: number | null;
+  safety_summary?: string | null;
   safety_checked_at?: string | null;
   created_at: string;
   updated_at: string;

@@ -46,13 +46,13 @@ IMPORTANT: an article that merely REPORTS ON, EXPLAINS, or CRITIQUES one of thes
 Title: ${(title ?? "").slice(0, 150)}
 Excerpt: ${(text ?? "").slice(0, 600)}
 
-Reply in this exact format only, nothing else:
-CATEGORY=NONE SEVERITY=NONE
+Reply in this exact format only, nothing else, all on one line:
+CATEGORY=NONE SEVERITY=NONE REASON=none
 or
-CATEGORY=NSFW SEVERITY=HIGH
-(CATEGORY one of: NONE, NSFW, HATE_VIOLENCE_ILLEGAL, POLITICAL_CONTROVERSY. SEVERITY one of: NONE, LOW, MEDIUM, HIGH.)`,
+CATEGORY=NSFW SEVERITY=HIGH REASON=<why, under 12 words, specific to this article>
+(CATEGORY one of: NONE, NSFW, HATE_VIOLENCE_ILLEGAL, POLITICAL_CONTROVERSY. SEVERITY one of: NONE, LOW, MEDIUM, HIGH. REASON is a short human-readable explanation someone could read instead of opening the article.)`,
         }],
-        max_tokens: 20,
+        max_tokens: 60,
         temperature: 0,
       }),
       signal: AbortSignal.timeout(15000),
@@ -62,10 +62,16 @@ CATEGORY=NSFW SEVERITY=HIGH
     const reply = (data.choices?.[0]?.message?.content ?? "").trim();
     const catMatch = reply.match(/CATEGORY=(NONE|NSFW|HATE_VIOLENCE_ILLEGAL|POLITICAL_CONTROVERSY)/i);
     const sevMatch = reply.match(/SEVERITY=(NONE|LOW|MEDIUM|HIGH)/i);
+    const reasonMatch = reply.match(/REASON=(.+)$/i);
     const cat = catMatch?.[1]?.toUpperCase();
     const sev = sevMatch?.[1]?.toUpperCase();
+    const reason = reasonMatch?.[1]?.trim().replace(/\.$/, "");
     if (!cat || cat === "NONE" || !sev || sev === "NONE") return null;
-    return { category: cat.toLowerCase(), severity: sev.toLowerCase() };
+    return {
+      category: cat.toLowerCase(),
+      severity: sev.toLowerCase(),
+      reason: reason && reason.toLowerCase() !== "none" ? reason : null,
+    };
   } catch {
     return null; // fail open
   }
@@ -76,6 +82,23 @@ function scoreWeight(category, severity) {
     ? { high: 15, medium: 8, low: 3 }
     : { high: 30, medium: 18, low: 8 };
   return weights[severity] ?? 0;
+}
+
+const CATEGORY_LABEL = {
+  nsfw: "NSFW/sexual content",
+  hate_violence_illegal: "hate/violence/illegal content",
+  political_controversy: "political or religious controversy",
+};
+
+function buildSummary(score, flags) {
+  if (flags.length === 0) return null;
+  const shown = flags.slice(0, 3).map((f) => {
+    const label = CATEGORY_LABEL[f.category] ?? f.category;
+    return f.reason ? `${label} (${f.severity}) — ${f.reason}` : `${label} (${f.severity})`;
+  });
+  const more = flags.length > 3 ? `; and ${flags.length - 3} more` : "";
+  const noun = flags.length === 1 ? "post" : "posts";
+  return `Score ${score}/100 — ${flags.length} flagged ${noun}: ${shown.join("; ")}${more}.`;
 }
 
 // A single Client can't handle overlapping concurrent queries (node-postgres serializes on
@@ -103,10 +126,10 @@ for (const row of articles) {
     const result = await classify(row.title, row.readability_text_excerpt);
     if (result && row.author_id) {
       await client.query(
-        `INSERT INTO flagged_content (author_id, article_id, category, severity)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (article_id) DO UPDATE SET category = EXCLUDED.category, severity = EXCLUDED.severity`,
-        [row.author_id, row.id, result.category, result.severity]
+        `INSERT INTO flagged_content (author_id, article_id, category, severity, reason)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (article_id) DO UPDATE SET category = EXCLUDED.category, severity = EXCLUDED.severity, reason = EXCLUDED.reason`,
+        [row.author_id, row.id, result.category, result.severity, result.reason]
       );
       touchedAuthors.add(row.author_id);
       flagged++;
@@ -122,11 +145,12 @@ await queue.onIdle();
 
 console.log(`Recomputing safety_score for ${touchedAuthors.size} affected authors...`);
 for (const authorId of touchedAuthors) {
-  const { rows: flags } = await client.query(`SELECT category, severity FROM flagged_content WHERE author_id = $1`, [authorId]);
+  const { rows: flags } = await client.query(`SELECT category, severity, reason FROM flagged_content WHERE author_id = $1`, [authorId]);
   let score = 100;
   for (const f of flags) score -= scoreWeight(f.category, f.severity);
   score = Math.max(0, Math.min(100, score));
-  await client.query(`UPDATE authors SET safety_score = $1, safety_checked_at = now() WHERE id = $2`, [score, authorId]);
+  const summary = buildSummary(score, flags);
+  await client.query(`UPDATE authors SET safety_score = $1, safety_summary = $2, safety_checked_at = now() WHERE id = $3`, [score, summary, authorId]);
 }
 
 console.log(`Done. ${checked} articles screened, ${flagged} flagged, ${touchedAuthors.size} author scores updated.`);

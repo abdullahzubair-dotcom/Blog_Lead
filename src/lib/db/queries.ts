@@ -298,13 +298,14 @@ export async function markArticleSafetyChecked(articleId: string): Promise<void>
 
 // Recomputes and stores an author's aggregate safety_score from all their flagged articles.
 export async function recomputeAuthorSafetyScore(authorId: string): Promise<number> {
-  const { computeSafetyScore } = await import("@/lib/extract/safety");
+  const { computeSafetyScore, buildSafetySummary } = await import("@/lib/extract/safety");
   const { data: flags } = await supabaseAdmin
     .from("flagged_content")
-    .select("category, severity")
+    .select("category, severity, reason")
     .eq("author_id", authorId);
   const score = computeSafetyScore((flags ?? []) as any);
-  await supabaseAdmin.from("authors").update({ safety_score: score, safety_checked_at: new Date().toISOString() }).eq("id", authorId);
+  const summary = buildSafetySummary(score, (flags ?? []) as any);
+  await supabaseAdmin.from("authors").update({ safety_score: score, safety_summary: summary, safety_checked_at: new Date().toISOString() }).eq("id", authorId);
   return score;
 }
 
