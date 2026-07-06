@@ -22,6 +22,8 @@ export interface Author {
   same_as_json: string[];
   description?: string;
   source?: string;
+  safety_score?: number | null;
+  safety_checked_at?: string | null;
   created_at: string;
   updated_at: string;
   // joined
@@ -29,6 +31,19 @@ export interface Author {
   contacts?: Contact[];
   articles?: Article[];
   score?: Score;
+}
+
+// One flagged post for an author's safety screening (NSFW / hate-violence-illegal /
+// political-controversy). See src/lib/extract/safety.ts.
+export interface FlaggedContent {
+  id: string;
+  author_id: string;
+  article_id: string;
+  category: "nsfw" | "hate_violence_illegal" | "political_controversy";
+  severity: "low" | "medium" | "high";
+  reason?: string;
+  created_at: string;
+  article?: { title?: string; url_canonical?: string };
 }
 
 export interface Article {
@@ -143,6 +158,7 @@ export interface ProspectCard {
   mentions: string[];
   score: Score | null;
   domain: Domain | null;
+  flaggedContent?: FlaggedContent[];
 }
 
 export interface DashboardStats {

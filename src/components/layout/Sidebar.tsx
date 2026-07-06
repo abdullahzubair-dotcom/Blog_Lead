@@ -16,6 +16,7 @@ import {
   Send,
   AtSign,
   Loader2,
+  Bell,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -28,6 +29,7 @@ const NAV = [
   { name: "Email Finder", href: "/email-finder", icon: AtSign },
   { name: "Emails", href: "/emails", icon: Mail },
   { name: "Sending", href: "/sending", icon: Send },
+  { name: "Notifications", href: "/notifications", icon: Bell },
   { name: "Admin", href: "/admin", icon: Rocket },
   { name: "Settings", href: "/settings", icon: Settings },
 ];

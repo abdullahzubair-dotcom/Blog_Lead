@@ -281,6 +281,33 @@ export async function upsertScore(data: Partial<Score> & { author_id?: string; a
   return score;
 }
 
+// ─── Content safety screening ──────────────────────────────────────────────────
+
+export async function insertFlaggedContent(data: {
+  author_id: string; article_id: string; category: string; severity: string; reason?: string;
+}): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("flagged_content")
+    .upsert(data, { onConflict: "article_id" });
+  if (error) throw error;
+}
+
+export async function markArticleSafetyChecked(articleId: string): Promise<void> {
+  await supabaseAdmin.from("articles").update({ safety_checked_at: new Date().toISOString() }).eq("id", articleId);
+}
+
+// Recomputes and stores an author's aggregate safety_score from all their flagged articles.
+export async function recomputeAuthorSafetyScore(authorId: string): Promise<number> {
+  const { computeSafetyScore } = await import("@/lib/extract/safety");
+  const { data: flags } = await supabaseAdmin
+    .from("flagged_content")
+    .select("category, severity")
+    .eq("author_id", authorId);
+  const score = computeSafetyScore((flags ?? []) as any);
+  await supabaseAdmin.from("authors").update({ safety_score: score, safety_checked_at: new Date().toISOString() }).eq("id", authorId);
+  return score;
+}
+
 // ─── Seeds ────────────────────────────────────────────────────────────────────
 
 export async function getSeeds(): Promise<SeedTool[]> {
@@ -946,13 +973,14 @@ export async function getWorkflowProspects(
 export async function getAuthorDetail(authorId: string): Promise<any | null> {
   const { data } = await supabaseAdmin
     .from("authors")
-    .select(`*, domain:domains(*), contacts(*), article_authors(article:articles(*, domain:domains(*), mentions(*))), scores(*)`)
+    .select(`*, domain:domains(*), contacts(*), article_authors(article:articles(*, domain:domains(*), mentions(*))), scores(*), flagged_content(*, article:articles(title, url_canonical))`)
     .eq("id", authorId)
     .maybeSingle();
   if (!data) return null;
   const articles = ((data as any).article_authors ?? [])
     .map((aa: any) => aa.article).filter(Boolean)
     .sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""));
+  const flaggedContent = (data as any).flagged_content ?? [];
   const score = ((data as any).scores ?? []).sort((a: any, b: any) => (b.composite ?? 0) - (a.composite ?? 0))[0] ?? null;
   // ProspectCard.mentions is a string[] of tool names (deduped) — the drawer renders each as
   // a badge. Return names, not raw mention rows, or React throws on rendering an object.
@@ -966,12 +994,13 @@ export async function getAuthorDetail(authorId: string): Promise<any | null> {
   const hasHistory = (outreach ?? []).length > 0;
   const contacted = override === true ? true : override === false ? false : hasHistory;
   return {
-    author: { ...(data as any), article_authors: undefined, scores: undefined },
+    author: { ...(data as any), article_authors: undefined, scores: undefined, flagged_content: undefined },
     domain: (data as any).domain ?? null,
     contacts: (data as any).contacts ?? [],
     articles,
     mentions,
     score,
+    flaggedContent,
     contacted,
     contactedOverride: override,
     hasOutreachHistory: hasHistory,
@@ -1633,4 +1662,86 @@ export async function getDueEmails(limit = 25): Promise<Array<OutreachEmail & { 
     const mailto = (e.author?.contacts ?? []).find((c: any) => c.type === "mailto");
     return { ...e, recipient: mailto ? mailto.value.replace(/^mailto:/, "") : undefined };
   });
+}
+
+// ─── Author-watch notifications ────────────────────────────────────────────────
+
+export async function addAuthorWatch(userEmail: string, authorId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("author_watches")
+    .upsert({ user_email: userEmail, author_id: authorId }, { onConflict: "user_email,author_id" });
+  if (error) throw error;
+}
+
+export async function removeAuthorWatch(userEmail: string, authorId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("author_watches")
+    .delete()
+    .eq("user_email", userEmail)
+    .eq("author_id", authorId);
+  if (error) throw error;
+}
+
+export async function getUserWatches(userEmail: string): Promise<any[]> {
+  const { data, error } = await supabaseAdmin
+    .from("author_watches")
+    .select("author_id, created_at, last_checked_at, author:authors(id, full_name, avatar_url, domain:domains(host, name), contacts(type, value))")
+    .eq("user_email", userEmail)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Every author watched by ANYONE, deduped — the daily check runs once per author, not once
+// per watcher, then fans notifications out to everyone watching that author.
+export async function getDistinctWatchedAuthors(limit = 200): Promise<any[]> {
+  const { data, error } = await supabaseAdmin
+    .from("author_watches")
+    .select("author_id, author:authors(id, full_name, primary_domain_id, contacts(type, value), domain:domains!primary_domain_id(host))")
+    .order("last_checked_at", { ascending: true, nullsFirst: true }) // stalest-checked first
+    .limit(limit);
+  if (error) throw error;
+  const seen = new Map<string, any>();
+  for (const row of data ?? []) {
+    if (!seen.has(row.author_id)) seen.set(row.author_id, row.author);
+  }
+  return [...seen.values()].filter(Boolean);
+}
+
+export async function getWatchersOf(authorId: string): Promise<string[]> {
+  const { data, error } = await supabaseAdmin.from("author_watches").select("user_email").eq("author_id", authorId);
+  if (error) throw error;
+  return (data ?? []).map((r) => r.user_email);
+}
+
+export async function touchWatchLastChecked(authorId: string): Promise<void> {
+  await supabaseAdmin.from("author_watches").update({ last_checked_at: new Date().toISOString() }).eq("author_id", authorId);
+}
+
+// Records one notification per watching user for a newly-found article. Silently no-ops on
+// the unique-constraint conflict — re-running the daily check never double-notifies.
+export async function insertWatchNotification(data: { user_email: string; author_id: string; article_id: string }): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("author_watch_notifications")
+    .upsert(data, { onConflict: "user_email,article_id", ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+export async function markWatchNotificationEmailed(id: string): Promise<void> {
+  await supabaseAdmin.from("author_watch_notifications").update({ emailed_at: new Date().toISOString() }).eq("id", id);
+}
+
+export async function getUserNotifications(userEmail: string, limit = 100): Promise<any[]> {
+  const { data, error } = await supabaseAdmin
+    .from("author_watch_notifications")
+    .select("id, created_at, read_at, author:authors(id, full_name), article:articles(id, title, url_canonical, published_at)")
+    .eq("user_email", userEmail)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function markNotificationRead(id: string, userEmail: string): Promise<void> {
+  await supabaseAdmin.from("author_watch_notifications").update({ read_at: new Date().toISOString() }).eq("id", id).eq("user_email", userEmail);
 }

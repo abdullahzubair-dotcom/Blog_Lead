@@ -45,3 +45,29 @@ export function extractOutboundLinks(html: string, baseUrl: string): { url: stri
 
   return links.slice(0, 100);
 }
+
+// Same-domain links only — the complement of extractOutboundLinks. Used to harvest an
+// author's own archive/page for their other articles (author-watch rechecks, writer-seeded
+// discovery) rather than to track who they link out to.
+export function extractSameDomainLinks(html: string, baseUrl: string, limit = 100): string[] {
+  const base = new URL(baseUrl);
+  const links = new Set<string>();
+
+  const linkPattern = /<a[^>]+href=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+
+  while ((m = linkPattern.exec(html)) !== null) {
+    const href = m[1]?.trim();
+    if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("mailto:")) continue;
+    try {
+      const resolved = new URL(href, baseUrl);
+      if (resolved.hostname === base.hostname) {
+        resolved.hash = "";
+        links.add(resolved.href);
+      }
+    } catch {}
+    if (links.size >= limit) break;
+  }
+
+  return [...links];
+}

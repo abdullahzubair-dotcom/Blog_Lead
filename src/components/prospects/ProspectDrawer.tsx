@@ -9,7 +9,19 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScoreBadge } from "./ScoreBadge";
 import { ContactSurface } from "./ContactSurface";
-import { ExternalLink, Search, Loader2, CheckCircle2, AlertTriangle, Link2, MailCheck } from "lucide-react";
+import { ExternalLink, Search, Loader2, CheckCircle2, AlertTriangle, Link2, MailCheck, ShieldAlert, ShieldCheck } from "lucide-react";
+
+const SAFETY_CATEGORY_LABEL: Record<string, string> = {
+  nsfw: "NSFW",
+  hate_violence_illegal: "Hate/violence/illegal",
+  political_controversy: "Political controversy",
+};
+
+function safetyTone(score: number): { color: string; label: string } {
+  if (score >= 80) return { color: "text-green-400 border-green-500/30 bg-green-500/10", label: "Clean" };
+  if (score >= 50) return { color: "text-amber-400 border-amber-500/30 bg-amber-500/10", label: "Some flags" };
+  return { color: "text-red-400 border-red-500/30 bg-red-500/10", label: "Flagged" };
+}
 
 function linkedinOf(contacts: { type: string; value: string }[]): string | null {
   const c = contacts?.find((c) => c.type === "linkedin");
@@ -69,7 +81,7 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
   }
 
   if (!prospect) return null;
-  const { author, articles, contacts, mentions, score, domain } = prospect;
+  const { author, articles, contacts, mentions, score, domain, flaggedContent } = prospect;
 
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
@@ -161,6 +173,43 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
               </div>
             </Section>
           )}
+
+          {/* Safety screening — NSFW / hate-violence-illegal / political-controversy */}
+          {author.safety_score != null && (() => {
+            const tone = safetyTone(author.safety_score!);
+            return (
+              <Section title="Safety">
+                <div className="flex items-center gap-2">
+                  {author.safety_score! >= 80
+                    ? <ShieldCheck className="h-4 w-4 text-green-400" />
+                    : <ShieldAlert className="h-4 w-4 text-amber-400" />}
+                  <Badge variant="outline" className={`text-[11px] ${tone.color}`}>
+                    {tone.label} · {author.safety_score}/100
+                  </Badge>
+                </div>
+                {(flaggedContent?.length ?? 0) > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    {flaggedContent!.map((f) => (
+                      <div key={f.id} className="flex items-start gap-2 text-xs bg-red-500/5 border border-red-500/20 rounded-md px-2.5 py-1.5">
+                        <AlertTriangle className="h-3 w-3 text-red-400 shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <p className="text-muted-foreground">
+                            <span className="text-red-400 font-medium">{SAFETY_CATEGORY_LABEL[f.category] ?? f.category}</span>
+                            {" "}({f.severity})
+                          </p>
+                          {f.article?.title && (
+                            f.article.url_canonical
+                              ? <a href={f.article.url_canonical} target="_blank" rel="noreferrer" className="text-foreground hover:underline truncate block">{f.article.title}</a>
+                              : <p className="text-foreground truncate">{f.article.title}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Section>
+            );
+          })()}
 
           {/* Contacts */}
           <Section title={`Contacts (${contacts.length})`}>

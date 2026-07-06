@@ -3,7 +3,8 @@ import { getSeeds, getHarvesters, insertDiscoveryHits, getPendingHits, getAllPen
   upsertDomain, upsertAuthor, upsertArticle, upsertContact, upsertMention, linkArticleAuthor,
   upsertScore, createPipelineRun, finishPipelineRun, isSuppressed,
   getUnprofiledHits, countUnprofiledHits, getProfiledUrlSet,
-  linkAuthorsToCampaign, updateCampaign, getAuthorIdsForUrls } from "@/lib/db/queries";
+  linkAuthorsToCampaign, updateCampaign, getAuthorIdsForUrls,
+  insertFlaggedContent, markArticleSafetyChecked, recomputeAuthorSafetyScore } from "@/lib/db/queries";
 import { gdeltHarvester } from "@/lib/harvesters/gdelt";
 import { hnHarvester } from "@/lib/harvesters/hackernews";
 import { redditHarvester } from "@/lib/harvesters/reddit";
@@ -27,6 +28,7 @@ import { detectMentions, extractOutboundLinks } from "@/lib/extract/mentions";
 import { extractContacts } from "@/lib/extract/contacts";
 import { classifyArchetype } from "@/lib/extract/archetype";
 import { scoreArticleRelevance } from "@/lib/extract/relevance";
+import { classifyContentSafety } from "@/lib/extract/safety";
 import { computeScore } from "@/lib/score";
 import { runLearningPhase } from "@/lib/learn";
 import { generateDiscoveryQueries } from "@/lib/pipeline/queries";
@@ -683,6 +685,19 @@ export async function processHit(hitId: string, url: string, source: string, see
     });
 
     await upsertScore({ author_id: authorRow.id, article_id: articleRow.id, ...scoreData }).catch(() => {});
+
+    // Content safety screening — flags NSFW/hate-violence-illegal/political-controversy
+    // content so we can avoid pitching writers whose work doesn't fit. Fails open (never
+    // blocks the pipeline) and runs on every new article, per-author score recomputed
+    // only when something is actually flagged.
+    try {
+      const safety = await classifyContentSafety(meta.title ?? "", text, abortSignal);
+      if (safety.category && safety.severity) {
+        await insertFlaggedContent({ author_id: authorRow.id, article_id: articleRow.id, category: safety.category, severity: safety.severity });
+        await recomputeAuthorSafetyScore(authorRow.id);
+      }
+      await markArticleSafetyChecked(articleRow.id);
+    } catch { /* screening is best-effort — never fail discovery over it */ }
 
     return authorRow.id;
   }
