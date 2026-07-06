@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDistinctWatchedAuthors, getWatchersOf, insertWatchNotification, markWatchNotificationEmailed,
-  touchWatchLastChecked, getUserEmailConfig, getUserAppPasswordEnc } from "@/lib/db/queries";
-import { checkAuthorForNewContent } from "@/lib/pipeline/watch";
-import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
+import { getDistinctWatchedAuthors, getUserEmailConfig, getUserAppPasswordEnc } from "@/lib/db/queries";
+import { checkAndNotifyAuthor, type SenderInfo } from "@/lib/pipeline/watch";
 import { decryptSecret } from "@/lib/crypto";
 import { acquireLock, releaseLock } from "@/lib/redis";
 import { auth } from "@auth";
@@ -38,8 +36,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ skipped: "another check is in progress" });
   }
 
-  const senderCache = new Map<string, { pass: string | null; fromName?: string }>();
-  const senderInfo = async (email: string) => {
+  const senderCache = new Map<string, SenderInfo>();
+  const getSenderInfo = async (email: string) => {
     if (!senderCache.has(email)) {
       const [enc, cfg] = await Promise.all([getUserAppPasswordEnc(email), getUserEmailConfig(email)]);
       senderCache.set(email, { pass: decryptSecret(enc), fromName: cfg.from_name });
@@ -53,26 +51,10 @@ export async function POST(req: NextRequest) {
     const authors = await getDistinctWatchedAuthors(200);
     for (const author of authors) {
       authorsChecked++;
-      const found = await checkAuthorForNewContent(author).catch(() => []);
-      if (found.length === 0) { await touchWatchLastChecked(author.id); continue; }
-      newArticles += found.length;
-
-      const watchers = await getWatchersOf(author.id);
-      for (const article of found) {
-        for (const userEmail of watchers) {
-          await insertWatchNotification({ user_email: userEmail, author_id: author.id, article_id: article.articleId });
-          notified++;
-
-          const info = await senderInfo(userEmail);
-          const subject = `New post from ${author.full_name}`;
-          const body = `${author.full_name} just published something new:\n\n${article.title ?? "(untitled)"}\n${article.url}\n\nYou're getting this because you're watching ${author.full_name} in GenAI Scout.`;
-          const result = info.pass
-            ? await sendEmailAs({ user: userEmail, pass: info.pass, fromName: info.fromName, to: userEmail, subject, body })
-            : await sendEmail({ to: userEmail, subject, body });
-          if (result.ok) emailed++;
-        }
-      }
-      await touchWatchLastChecked(author.id);
+      const result = await checkAndNotifyAuthor(author, getSenderInfo).catch(() => ({ found: [], notified: 0, emailed: 0 }));
+      newArticles += result.found.length;
+      notified += result.notified;
+      emailed += result.emailed;
     }
 
     return NextResponse.json({ authorsChecked, newArticles, notified, emailed });
