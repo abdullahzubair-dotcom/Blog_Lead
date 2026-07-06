@@ -1306,7 +1306,7 @@ export async function updateOutreachEmail(id: string, data: {
 
 // Authors that lack an email (no mailto contact), optionally scoped to one campaign.
 // Returns id + name + publication domain host so the finder can run the waterfall.
-export async function getAuthorsNeedingEmail(campaignId?: string): Promise<Array<{ id: string; name: string; host: string; publication: string }>> {
+export async function getAuthorsNeedingEmail(campaignId?: string, onlyNew = false): Promise<Array<{ id: string; name: string; host: string; publication: string }>> {
   let candidateIds: Set<string> | null = null;
   if (campaignId) {
     candidateIds = await getCampaignAuthorIds(campaignId);
@@ -1318,17 +1318,22 @@ export async function getAuthorsNeedingEmail(campaignId?: string): Promise<Array
     (await fetchAllRows<{ author_id: string }>("contacts", "author_id", (q) => q.eq("type", "mailto"))).map((r) => r.author_id)
   );
 
-  const rows = await fetchAllRows<{ id: string; full_name: string; domain: { host: string; name: string } | null }>(
+  const rows = await fetchAllRows<{ id: string; full_name: string; email_search_attempted_at: string | null; domain: { host: string; name: string } | null }>(
     "authors",
-    "id, full_name, domain:domains!primary_domain_id(host, name)",
+    "id, full_name, email_search_attempted_at, domain:domains!primary_domain_id(host, name)",
     (q) => q.not("primary_domain_id", "is", null),
   );
 
   return rows
     .filter((r) => !withEmail.has(r.id))
+    .filter((r) => !onlyNew || !r.email_search_attempted_at) // "brand new" = never attempted before, regardless of outcome
     .filter((r) => !candidateIds || candidateIds.has(r.id))
     .filter((r) => r.domain?.host)
     .map((r) => ({ id: r.id, name: r.full_name, host: r.domain!.host, publication: r.domain!.name ?? r.domain!.host }));
+}
+
+export async function markEmailSearchAttempted(authorId: string): Promise<void> {
+  await supabaseAdmin.from("authors").update({ email_search_attempted_at: new Date().toISOString() }).eq("id", authorId);
 }
 
 // Authors (in a campaign, or all) that DON'T yet have a stored LinkedIn contact — the
@@ -1360,7 +1365,7 @@ export async function getAuthorsNeedingLinkedin(campaignId?: string): Promise<Ar
 // Denominator + numerator for the Email/LinkedIn finder: how many prospects in the pool
 // (campaign, or all authors with a publication) still lack an email (or LinkedIn), of the
 // total pool. Matches the finder's own target set.
-export async function getFinderCounts(campaignId: string | undefined, mode: "email" | "linkedin"): Promise<{ total: number; needing: number }> {
+export async function getFinderCounts(campaignId: string | undefined, mode: "email" | "linkedin", onlyNew = false): Promise<{ total: number; needing: number }> {
   const candidateIds = campaignId ? await getCampaignAuthorIds(campaignId) : null;
   if (candidateIds && candidateIds.size === 0) return { total: 0, needing: 0 };
 
@@ -1368,11 +1373,14 @@ export async function getFinderCounts(campaignId: string | undefined, mode: "ema
   const withContact = new Set(
     (await fetchAllRows<{ author_id: string }>("contacts", "author_id", (q) => q.eq("type", type))).map((r) => r.author_id)
   );
-  const rows = await fetchAllRows<{ id: string; domain: { host: string } | null }>(
-    "authors", "id, domain:domains!primary_domain_id(host)", (q) => q.not("primary_domain_id", "is", null),
+  const rows = await fetchAllRows<{ id: string; email_search_attempted_at: string | null; domain: { host: string } | null }>(
+    "authors", "id, email_search_attempted_at, domain:domains!primary_domain_id(host)", (q) => q.not("primary_domain_id", "is", null),
   );
   const pool = rows.filter((r) => r.domain?.host && (!candidateIds || candidateIds.has(r.id)));
-  return { total: pool.length, needing: pool.filter((r) => !withContact.has(r.id)).length };
+  return {
+    total: pool.length,
+    needing: pool.filter((r) => !withContact.has(r.id) && (mode === "linkedin" || !onlyNew || !r.email_search_attempted_at)).length,
+  };
 }
 
 // Known (author name, email) pairs for a domain — used to infer the domain's email

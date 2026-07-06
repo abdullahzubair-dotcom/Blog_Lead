@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { AtSign, Loader2, Search, CheckCircle2, XCircle, Megaphone, Square, ChevronRight, History, ArrowLeft, AlertTriangle, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ProspectDrawer } from "@/components/prospects/ProspectDrawer";
 import type { Campaign, ProspectCard } from "@/lib/types";
 
@@ -27,6 +28,7 @@ export default function EmailFinderPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignId, setCampaignId] = useState<string>("");
   const [mode, setMode] = useState<"email" | "linkedin">("email");
+  const [onlyNew, setOnlyNew] = useState(false); // email mode only: skip authors already searched before, even if it failed
   const [pending, setPending] = useState<number | null>(null);
   const [totalProspects, setTotalProspects] = useState<number>(0);
   const [status, setStatus] = useState<Status | null>(null);
@@ -66,11 +68,12 @@ export default function EmailFinderPage() {
 
   const backToLive = useCallback(() => { setViewingRunId(null); setStatus(null); }, []);
 
-  const loadPending = useCallback((cid: string, m: "email" | "linkedin" = "email") => {
+  const loadPending = useCallback((cid: string, m: "email" | "linkedin" = "email", newOnly = false) => {
     setPending(null);
     const params = new URLSearchParams();
     if (cid) params.set("campaign_id", cid);
     if (m === "linkedin") params.set("mode", "linkedin");
+    if (m === "email" && newOnly) params.set("only_new", "true");
     const qs = params.toString();
     fetch(`/api/enrich/pending${qs ? `?${qs}` : ""}`).then((r) => r.json()).then((d) => {
       setPending(d.count ?? 0);
@@ -87,21 +90,21 @@ export default function EmailFinderPage() {
       if (!st.running) {
         if (timer.current) { clearInterval(timer.current); timer.current = null; }
         setStarting(false);
-        loadPending(campaignId, mode);
+        loadPending(campaignId, mode, onlyNew);
         loadRuns(); // a finished run is now in history
       }
     };
     tick();
     timer.current = setInterval(tick, 2000);
-  }, [campaignId, mode, loadPending, loadRuns]);
+  }, [campaignId, mode, onlyNew, loadPending, loadRuns]);
 
   useEffect(() => {
-    loadPending(campaignId, mode);
+    loadPending(campaignId, mode, onlyNew);
     // resume progress if a run is active
     fetch("/api/enrich/status").then((r) => r.json()).then((st) => { if (st?.running) { setStatus(st); poll(); } }).catch(() => {});
     return () => { if (timer.current) clearInterval(timer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaignId, mode]);
+  }, [campaignId, mode, onlyNew]);
 
   async function findEmails() {
     setViewingRunId(null); // go back to live
@@ -109,7 +112,7 @@ export default function EmailFinderPage() {
     const res = await fetch("/api/enrich/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...(campaignId ? { campaign_id: campaignId } : {}), mode }),
+      body: JSON.stringify({ ...(campaignId ? { campaign_id: campaignId } : {}), mode, ...(mode === "email" && onlyNew ? { only_new: true } : {}) }),
     });
     const data = await res.json().catch(() => ({}));
     if (data.started) { poll(); }
@@ -176,12 +179,24 @@ export default function EmailFinderPage() {
             </select>
           </div>
 
+          {mode === "email" && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground opacity-0 select-none">Brand new</label>
+              <div className="h-9 flex items-center gap-2">
+                <Checkbox id="only-new" checked={onlyNew} onCheckedChange={(v) => setOnlyNew(v === true)} disabled={running} />
+                <label htmlFor="only-new" className="text-sm cursor-pointer select-none" title="Skip authors already searched before, even if it failed — only try ones we've never attempted.">
+                  Brand new only
+                </label>
+              </div>
+            </div>
+          )}
+
           <div className="flex-1 min-w-[200px]">
             <p className="text-sm">
               {pending === null ? (
                 <span className="text-muted-foreground inline-flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> counting…</span>
               ) : (
-                <><span className="text-2xl font-bold text-violet-400 tabular-nums">{pending.toLocaleString()}</span> <span className="text-muted-foreground">without a{mode === "linkedin" ? " LinkedIn" : "n email"}</span> <span className="text-muted-foreground/60">of {totalProspects.toLocaleString()} total prospects</span></>
+                <><span className="text-2xl font-bold text-violet-400 tabular-nums">{pending.toLocaleString()}</span> <span className="text-muted-foreground">without a{mode === "linkedin" ? " LinkedIn" : "n email"}{mode === "email" && onlyNew ? " (never searched)" : ""}</span> <span className="text-muted-foreground/60">of {totalProspects.toLocaleString()} total prospects</span></>
               )}
             </p>
           </div>

@@ -1,4 +1,4 @@
-import { upsertContact, saveEnrichmentRun } from "@/lib/db/queries";
+import { upsertContact, saveEnrichmentRun, markEmailSearchAttempted } from "@/lib/db/queries";
 import { resolveEmailCascade } from "@/lib/enrich/cascade";
 import { resolveLinkedinCascade } from "@/lib/enrich/linkedinCascade";
 import type { DomainPattern } from "@/lib/enrich/patternInfer";
@@ -65,6 +65,10 @@ async function processOne(a: EnrichTarget, mode: FindMode, caches: Caches): Prom
     if (!EMAIL_RE.test(e) || isRoleEmail(e)) r = null;
     else r = { ...r, email: e };
   }
+
+  // Mark attempted regardless of outcome — this is what lets a future run target only
+  // authors who've truly never been searched, instead of re-trying known failures.
+  await markEmailSearchAttempted(a.id).catch(() => {});
 
   if (r) {
     await upsertContact({ author_id: a.id, type: "mailto", value: `mailto:${r.email}`, confidence: r.score ? r.score / 100 : 0.8, source: r.source, verified_syntax: true }).catch(() => {});

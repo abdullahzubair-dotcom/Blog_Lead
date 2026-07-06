@@ -30,11 +30,17 @@ export async function POST(req: NextRequest) {
   // ── Fresh start ─────────────────────────────────────────────────────
   if (await checkRunning()) return NextResponse.json({ started: false, alreadyRunning: true });
 
+  const onlyNew = body.only_new === true;
   const targets = findMode === "linkedin"
     ? await getAuthorsNeedingLinkedin(body.campaign_id)
-    : await getAuthorsNeedingEmail(body.campaign_id);
+    : await getAuthorsNeedingEmail(body.campaign_id, onlyNew);
   if (targets.length === 0) {
-    return NextResponse.json({ started: false, total: 0, reason: findMode === "linkedin" ? "Every author already has a LinkedIn on file." : "No authors without an email." });
+    return NextResponse.json({
+      started: false, total: 0,
+      reason: findMode === "linkedin"
+        ? "Every author already has a LinkedIn on file."
+        : onlyNew ? "No brand-new authors to search — everyone left has already been searched before." : "No authors without an email.",
+    });
   }
 
   const campaign = body.campaign_id ? await getCampaign(body.campaign_id).catch(() => null) : null;
