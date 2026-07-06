@@ -176,21 +176,24 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
 
           {/* Safety screening — NSFW / hate-violence-illegal / political-controversy */}
           {author.safety_score != null && (() => {
-            const tone = safetyTone(author.safety_score!);
+            // Postgres numeric columns come back as strings (e.g. "92.00") — coerce once.
+            const score = Math.round(Number(author.safety_score));
+            const tone = safetyTone(score);
             return (
               <Section title="Safety">
                 <div className="flex items-center gap-2">
-                  {author.safety_score! >= 80
+                  {score >= 80
                     ? <ShieldCheck className="h-4 w-4 text-green-400" />
                     : <ShieldAlert className="h-4 w-4 text-amber-400" />}
                   <Badge variant="outline" className={`text-[11px] ${tone.color}`}>
-                    {tone.label} · {author.safety_score}/100
+                    {tone.label} · {score}/100
                   </Badge>
                 </div>
-                {/* Explains the score in one sentence — no need to open the flagged posts to see why */}
-                {author.safety_summary && (
-                  <p className="text-xs text-muted-foreground leading-relaxed pt-1">{author.safety_summary}</p>
-                )}
+                {/* Explains the score in one sentence — no need to open the flagged posts to see why.
+                    Always shows something here, even when clean, so the section is never silent. */}
+                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
+                  {author.safety_summary ?? "No safety concerns found — nothing flagged in any of their articles."}
+                </p>
                 {(flaggedContent?.length ?? 0) > 0 && (
                   <div className="space-y-1.5 pt-1">
                     {flaggedContent!.map((f) => (
