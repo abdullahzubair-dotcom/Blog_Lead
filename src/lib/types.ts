@@ -180,6 +180,8 @@ export interface Campaign {
   status: "draft" | "running" | "done";
   created_at: string;
   author_count?: number;
+  seed_writer_name?: string | null;
+  seed_article_url?: string | null;
 }
 
 // ─── Workflows ────────────────────────────────────────────────────────────────

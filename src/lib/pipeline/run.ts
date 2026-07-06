@@ -32,6 +32,7 @@ import { classifyContentSafety } from "@/lib/extract/safety";
 import { computeScore } from "@/lib/score";
 import { runLearningPhase } from "@/lib/learn";
 import { generateDiscoveryQueries } from "@/lib/pipeline/queries";
+import { resolveAuthorSeed, harvestAuthorArchive } from "@/lib/pipeline/authorSeed";
 import { createPipelineController, clearStop, isStopRequested } from "@/lib/pipeline/abort";
 import { startBuffer, pushEvent, finishBuffer, snapshotBuffer } from "@/lib/pipeline/eventBuffer";
 import { saveCheckpoint, deleteCheckpoint, type PipelineCheckpoint } from "@/lib/pipeline/checkpoint";
@@ -55,6 +56,7 @@ type ProgressCallback = (p: PipelineProgress) => void;
 export interface DiscoveryOptions {
   campaignId?: string;
   customKeywords?: string[];
+  seedWriter?: { name?: string; articleUrl?: string };
   resume?: {
     usedQueries: string[];
     round: number;
@@ -168,6 +170,39 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       harvLog("rss", "Skipping RSS — already completed before interruption");
     }
 
+    const { supabaseAdmin } = await import("@/lib/db/supabase");
+
+    // ── Author-seed harvest — writer/article-seeded campaigns, runs once upfront ──
+    // Only on a fresh (non-resumed) run — the checkpoint doesn't track seed-harvest
+    // completion, and re-running it on resume would just waste fetches/search calls
+    // (inserts dedupe harmlessly on conflict, so it's wasteful, not incorrect).
+    const seedWriter = options?.seedWriter;
+    const hasKeywords = (options?.customKeywords?.length ?? 0) > 0;
+    if (seedWriter && !isResuming) {
+      const label = seedWriter.name ?? seedWriter.articleUrl ?? "writer";
+      emit("discover", `Looking up writer seed: ${label}...`);
+      try {
+        const resolved = await resolveAuthorSeed(seedWriter);
+        if (resolved) {
+          emit("discover", `Found ${resolved.resolvedName} on ${resolved.domain}`);
+          let archiveUrls: string[] = [];
+          if (resolved.authorPageUrl) {
+            const { data: existingArticles } = await supabaseAdmin.from("articles").select("url_canonical");
+            const existingSet = new Set((existingArticles ?? []).map((r: any) => r.url_canonical));
+            archiveUrls = await harvestAuthorArchive(resolved.authorPageUrl, existingSet);
+          }
+          const seedUrls = [resolved.sampleArticleUrl, ...archiveUrls];
+          const saved = await insertDiscoveryHits(seedUrls.map((url) => ({ url, source: "author_seed" })));
+          stats.hitsDiscovered += saved;
+          emit("discover", `Author seed: ${saved} candidate articles queued for ${resolved.resolvedName}`);
+        } else {
+          emit("discover", `Couldn't find a page for ${label} — continuing${hasKeywords ? " with keyword search only" : ""}`);
+        }
+      } catch (e: any) {
+        emit("discover", `Author-seed lookup failed: ${e?.message ?? "unknown error"} — continuing${hasKeywords ? " with keyword search only" : ""}`);
+      }
+    }
+
     // ── Query-based harvesters: loop until TARGET new hits found ──────────────
     const TARGET_NEW_HITS = 2500;
     const MAX_QUERY_ROUNDS = 15;
@@ -181,15 +216,19 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     // Counters per harvester (persist across rounds)
     let gdeltTotal = 0, hnTotal = 0, redditTotal = 0, wpTotal = 0, braveTotal = 0;
 
-    const { supabaseAdmin } = await import("@/lib/db/supabase");
-
     const MIN_NEW_PER_ROUND = 15; // stop once rounds are consistently yielding fewer than this
     let weakRounds = 0; // consecutive rounds under MIN_NEW_PER_ROUND — require 2 in a row to stop,
                          // so one unlucky round doesn't kill an otherwise-productive run
+    // A pure writer-seeded campaign (no keywords) skips the keyword round loop entirely —
+    // it shouldn't pull in unrelated authors via the global default topics. If keywords are
+    // ALSO given alongside the seed writer, both run.
+    const skipKeywordLoop = !!seedWriter && !hasKeywords;
     if (resume?.discoveryDone) {
       emit("discover", "Discovery already complete from a previous run — resuming article processing only");
+    } else if (skipKeywordLoop) {
+      emit("discover", "Writer-only campaign — skipping keyword search, moving to processing");
     }
-    while (!resume?.discoveryDone && round < MAX_QUERY_ROUNDS && !signal.aborted && !timeUp()) {
+    while (!resume?.discoveryDone && !skipKeywordLoop && round < MAX_QUERY_ROUNDS && !signal.aborted && !timeUp()) {
       // Count new pending hits so far
       const { count: pendingCount } = await supabaseAdmin
         .from("discovery_hits")

@@ -19,7 +19,7 @@ export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", keywordInput: "", keywords: [] as string[] });
+  const [form, setForm] = useState({ name: "", keywordInput: "", keywords: [] as string[], seedWriterName: "", seedArticleUrl: "" });
   const [saving, setSaving] = useState(false);
 
   async function fetchCampaigns() {
@@ -42,16 +42,21 @@ export default function CampaignsPage() {
   }
 
   async function handleCreate() {
-    if (!form.name || !form.keywords.length) return;
+    if (!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim())) return;
     setSaving(true);
     const res = await fetch("/api/campaigns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: form.name, keywords: form.keywords }),
+      body: JSON.stringify({
+        name: form.name,
+        keywords: form.keywords,
+        seed_writer_name: form.seedWriterName.trim() || undefined,
+        seed_article_url: form.seedArticleUrl.trim() || undefined,
+      }),
     });
     if (res.ok) {
       setCreating(false);
-      setForm({ name: "", keywordInput: "", keywords: [] });
+      setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "" });
       fetchCampaigns();
     }
     setSaving(false);
@@ -105,14 +110,19 @@ export default function CampaignsPage() {
                 <StatusBadge status={c.status} />
               </div>
 
-              {/* Keywords */}
+              {/* Keywords + seed writer */}
               <div className="flex flex-wrap gap-1.5">
                 {c.keywords.map((kw) => (
                   <span key={kw} className="text-xs bg-violet-500/10 text-violet-300 border border-violet-500/20 px-2 py-0.5 rounded-full">
                     {kw}
                   </span>
                 ))}
-                {c.keywords.length === 0 && (
+                {c.seed_writer_name && (
+                  <span className="text-xs bg-blue-500/10 text-blue-300 border border-blue-500/20 px-2 py-0.5 rounded-full">
+                    ✍ {c.seed_writer_name}
+                  </span>
+                )}
+                {c.keywords.length === 0 && !c.seed_writer_name && !c.seed_article_url && (
                   <span className="text-xs text-muted-foreground italic">No keywords — uses global seeds</span>
                 )}
               </div>
@@ -171,10 +181,26 @@ export default function CampaignsPage() {
                 </div>
               )}
             </div>
+            <div className="space-y-2 border-t border-border pt-4">
+              <Label>Seed a specific writer <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Input
+                placeholder="Writer's name, e.g. Jane Doe"
+                value={form.seedWriterName}
+                onChange={(e) => setForm(f => ({ ...f, seedWriterName: e.target.value }))}
+              />
+              <Input
+                placeholder="One article link by them (optional but helps us find them faster)"
+                value={form.seedArticleUrl}
+                onChange={(e) => setForm(f => ({ ...f, seedArticleUrl: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">
+                Give us a writer's name and/or one article link and we'll find their profile and pull in their other articles on that site. Works with or without keywords above — with no keywords, discovery focuses on just this writer.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button onClick={handleCreate} disabled={!form.name || !form.keywords.length || saving}>
+            <Button onClick={handleCreate} disabled={!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim()) || saving}>
               {saving && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Create Campaign
             </Button>
