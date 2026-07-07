@@ -10,7 +10,6 @@ const WEBHOOK_KEY = "linkaudit:webhook";
 const SLACKMAP_KEY = "linkaudit:slackmap";
 const BOT_TOKEN_KEY = "linkaudit:bottoken";
 const USERS_CACHE_KEY = "linkaudit:slackusers";
-const MAX_FINDINGS_IN_MESSAGE = 25;
 
 // ─── Webhook + author-map storage (webhook stored encrypted, never returned) ──────
 
@@ -232,19 +231,22 @@ In ONE short phrase (max 18 words), tell a writer in plain human words exactly w
 }
 
 // Group findings by broken link so a site-wide dead nav link is one entry, not hundreds.
-const MAX_AI_LOCATIONS = 12; // AI-locate the first N groups; the rest fall back to text context
+// EVERY broken link goes in the digest, numbered for readability — long lists are split
+// across multiple Slack posts by the caller, never truncated.
+const MAX_AI_LOCATIONS = 12; // live AI-locate cap for older runs; new runs have persisted hints
 async function renderFindings(findings: Finding[], resolved: Record<string, string>): Promise<string> {
   const byLink = new Map<string, Finding[]>();
   for (const f of findings) {
     (byLink.get(f.link_url) ?? byLink.set(f.link_url, []).get(f.link_url)!).push(f);
   }
-  const groups = [...byLink.entries()].slice(0, MAX_FINDINGS_IN_MESSAGE);
   const lines: string[] = [];
   let aiCalls = 0;
-  for (const [link, fs] of groups) {
+  let n = 0;
+  for (const [link, fs] of byLink) {
+    n++;
     const first = fs[0];
     const label = REASON_LABEL[first.reason] ?? first.reason;
-    lines.push(`• *Broken:* ${link}  _(${label})_`);
+    lines.push(`*${n}.* ${link}  _(${label})_`);
     // Prefer the hint persisted at finalize; live AI call only for older runs without one.
     const location = first.location_hint ?? (aiCalls < MAX_AI_LOCATIONS ? (aiCalls++, await aiLocateFinding(first)) : null);
     if (location) lines.push(`   📍 ${location}`);
@@ -255,10 +257,20 @@ async function renderFindings(findings: Finding[], resolved: Record<string, stri
     }
     if (fs.length > 3) lines.push(`   ↳ …and on ${fs.length - 3} more page${fs.length - 3 === 1 ? "" : "s"}`);
   }
-  if (byLink.size > MAX_FINDINGS_IN_MESSAGE) {
-    lines.push(`…plus ${byLink.size - MAX_FINDINGS_IN_MESSAGE} more broken links — full list on the Link Audit page.`);
-  }
   return lines.join("\n");
+}
+
+// Split a long digest into Slack-friendly posts on line boundaries — Slack visually
+// truncates very long single messages, so ~3500 chars per post keeps every link readable.
+function chunkForSlack(text: string, maxLen = 3500): string[] {
+  const chunks: string[] = [];
+  let cur = "";
+  for (const line of text.split("\n")) {
+    if (cur.length + line.length + 1 > maxLen && cur) { chunks.push(cur); cur = ""; }
+    cur = cur ? `${cur}\n${line}` : line;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
 }
 
 async function haikuIntro(stats: { pages: number; links: number; broken: number; authors: string[] }): Promise<string | null> {
@@ -333,7 +345,14 @@ export async function postAuditDigest(runId: string): Promise<{ ok: boolean; err
     text += `\n\n_${run.unreachable} links couldn't be verified (bot-blocked or timed out) — not counted as broken._`;
   }
 
-  const res = await postToSlack(text.slice(0, 39_000));
+  // Post ALL of it — split across sequential messages when long, never truncated.
+  const chunks = chunkForSlack(text);
+  let res: { ok: boolean; error?: string } = { ok: true };
+  for (let i = 0; i < chunks.length; i++) {
+    const prefix = i > 0 ? `:link: _(continued ${i + 1}/${chunks.length})_\n` : "";
+    res = await postToSlack(prefix + chunks[i]);
+    if (!res.ok) break;
+  }
   if (res.ok) {
     await supabaseAdmin.from("link_audit_runs").update({ slack_posted_at: new Date().toISOString() }).eq("id", runId);
   }

@@ -274,9 +274,14 @@ async function clearAuditStop(): Promise<void> {
 
 export interface LinkVerdict { verdict: "ok" | "404" | "410" | "soft" | "home" | "unreach"; status?: number }
 
+// Tweet-embed plumbing: t.co / pic.twitter.com URLs 404 to bots but are rendered by
+// Twitter's embed script in a real browser (the tweet/video plays fine). Never report.
+const TWEET_EMBED_HOSTS = new Set(["t.co", "pic.twitter.com", "pic.x.com", "platform.twitter.com"]);
+
 export async function checkLink(url: string, fpCache: FingerprintMap): Promise<LinkVerdict> {
   let u: URL;
   try { u = new URL(url); } catch { return { verdict: "unreach" }; }
+  if (TWEET_EMBED_HOSTS.has(u.hostname.replace(/^www\./, ""))) return { verdict: "ok" };
 
   const res = await fetchRaw(url);
   if ("error" in res) return { verdict: "unreach" };
