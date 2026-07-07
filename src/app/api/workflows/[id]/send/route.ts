@@ -2,29 +2,40 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@auth";
 import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds } from "@/lib/db/queries";
 import { computeSmartSchedule, type ScheduleRecipient } from "@/lib/email/schedule";
+import { findSharedSender } from "@/lib/email/sharedSenders";
 import type { EmailSendConfig } from "@/lib/types";
 
 export const maxDuration = 300;
 
-// POST — schedule all ready emails for included prospects. Sends from the LOGGED-IN USER'S
-// own Gmail, on THEIR schedule (timezone/window/spacing/cap). Requires the user to have set
-// their Gmail app password first (else returns needsAppPassword for the UI popup). Each
-// scheduled email is stamped with the sender; delivery happens via the send-processor.
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// POST — schedule all ready emails for included prospects.
+// Body: { sender_email?: string } — omit (or your own address) to send from your own Gmail
+// as before; pass a configured shared inbox's address (see sharedSenders.ts) to send from
+// that identity instead. Either way, sent_by_email always records who actually clicked
+// Send, so attribution isn't lost when sending through a shared inbox.
+// Requires the CHOSEN identity to have a Gmail app password set (else needsAppPassword).
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
     const session = await auth().catch(() => null);
-    const senderEmail = (session?.user?.email as string | undefined) ?? "";
-    if (!senderEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+    const sentByEmail = (session?.user?.email as string | undefined) ?? "";
+    if (!sentByEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+
+    const body = await req.json().catch(() => ({}));
+    const shared = typeof body.sender_email === "string" ? findSharedSender(body.sender_email) : undefined;
+    const senderEmail = shared ? shared.email : sentByEmail;
 
     const userCfg = await getUserEmailConfig(senderEmail);
     if (!userCfg.hasPassword) {
       return NextResponse.json({
         needsAppPassword: true,
-        reason: "Add your Gmail app password in Settings so emails send from your own address.",
+        sender: senderEmail,
+        reason: shared
+          ? `${shared.label}'s Gmail app password isn't set up yet.`
+          : "Add your Gmail app password in Settings so emails send from your own address.",
       });
     }
-    // Shape the per-user config for computeSmartSchedule.
+    // Shape the chosen identity's config for computeSmartSchedule (timezone/window/cap
+    // protect whichever Gmail account is actually sending, so they come from its owner).
     const config: EmailSendConfig = {
       id: "", workflow_id: id, provider: "smtp", created_at: "",
       timezone: userCfg.timezone, send_hour_start: userCfg.send_hour_start, send_hour_end: userCfg.send_hour_end,
@@ -65,12 +76,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     const recipients: ScheduleRecipient[] = sendable.map((e) => ({ id: e.id, tz: config.timezone }));
 
     const slots = computeSmartSchedule(recipients, config, new Date());
-    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail);
+    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail, sentByEmail);
 
     return NextResponse.json({
       scheduled: slots.length,
       skippedContacted,
       sender: senderEmail,
+      sentBy: sentByEmail,
       firstAt: slots[0]?.at,
       lastAt: slots[slots.length - 1]?.at,
       timezone: config.timezone,

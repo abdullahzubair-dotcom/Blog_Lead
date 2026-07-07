@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { Mail, Plus, Loader2, Sparkles, Check, AlertCircle, Edit2, FileText, Send, Clock, Search, ChevronDown, Globe, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig, LinkedinMessage } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
 import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
+import { SHARED_SENDERS } from "@/lib/email/sharedSenders";
 
 // LinkedIn brand glyph (lucide dropped brand icons). Inherits color via currentColor.
 function Linkedin({ className }: { className?: string }) {
@@ -150,7 +152,13 @@ export default function EmailsPage() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [scheduling, setScheduling] = useState(false);
-  const [needAppPw, setNeedAppPw] = useState(false); // Send All blocked: no Gmail app password yet
+  const [needAppPw, setNeedAppPw] = useState<{ sender: string; label: string } | null>(null); // Send All blocked: chosen identity has no Gmail app password yet
+  const { data: session } = useSession();
+  const myEmail = session?.user?.email ?? "";
+
+  // "Choose sender" popup — own email vs. a shared inbox (e.g. Zain's) — shown on every Send All
+  const [chooseSenderOpen, setChooseSenderOpen] = useState(false);
+  const [chosenSender, setChosenSender] = useState<string>(""); // "" = own email
 
   useEffect(() => {
     Promise.all([
@@ -196,16 +204,24 @@ export default function EmailsPage() {
     setSavingConfig(false);
   }
 
-  async function scheduleSend() {
+  // senderEmail: "" = the current user's own Gmail; otherwise a shared inbox's address.
+  async function scheduleSend(senderEmail: string) {
     if (!selectedWorkflow) return;
+    setChooseSenderOpen(false);
     setScheduling(true);
-    const res = await fetch(`/api/workflows/${selectedWorkflow.id}/send`, { method: "POST" });
+    const res = await fetch(`/api/workflows/${selectedWorkflow.id}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(senderEmail ? { sender_email: senderEmail } : {}),
+    });
     const data = await res.json().catch(() => ({}));
     if (data.needsAppPassword) {
-      setNeedAppPw(true); // must add their Gmail app password first
+      const shared = SHARED_SENDERS.find((s) => s.email === data.sender);
+      setNeedAppPw({ sender: data.sender ?? senderEmail, label: shared?.label ?? "your" }); // must add an app password for the chosen identity first
     } else if (res.ok && data.scheduled > 0) {
       const skipped = data.skippedContacted ? ` (${data.skippedContacted} skipped — already contacted elsewhere)` : "";
-      toast.success(`Scheduled ${data.scheduled} emails from ${data.sender}${skipped}. Opening progress…`);
+      const via = data.sentBy && data.sender && data.sentBy !== data.sender ? ` (sent by ${data.sentBy})` : "";
+      toast.success(`Scheduled ${data.scheduled} emails from ${data.sender}${via}${skipped}. Opening progress…`);
       router.push("/sending");
     } else if (res.ok) {
       toast.error(data.reason ?? "Nothing to schedule — generate emails first.");
@@ -571,7 +587,7 @@ export default function EmailsPage() {
                 {/* Stage 3 — schedule the send (drip via SMTP) */}
                 <Button
                   size="sm"
-                  onClick={scheduleSend}
+                  onClick={() => { setChosenSender(""); setChooseSenderOpen(true); }}
                   disabled={!selectedWorkflow || scheduling || readyCount === 0}
                   className="bg-violet-600 hover:bg-violet-700 text-white gap-1.5"
                   title={readyCount === 0 ? "Generate emails first" : "Schedule all ready emails to send"}
@@ -998,27 +1014,72 @@ export default function EmailsPage() {
         </SheetContent>
       </Sheet>
 
-      {/* Send All blocked — user hasn't added their Gmail app password */}
-      <Dialog open={needAppPw} onOpenChange={setNeedAppPw}>
+      {/* Send All blocked — the chosen sending identity has no Gmail app password yet */}
+      <Dialog open={!!needAppPw} onOpenChange={(v) => { if (!v) setNeedAppPw(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add your Gmail app password first</DialogTitle>
+            <DialogTitle>{needAppPw?.label === "your" ? "Add your Gmail app password first" : `${needAppPw?.label}'s Gmail app password isn't set up`}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 py-1 text-sm">
-            <p className="text-muted-foreground">
-              Emails send from <span className="text-foreground font-medium">your own Gmail</span>, so you need a Gmail
-              <b> app password</b> (not your normal password). One-time setup:
-            </p>
-            <ol className="space-y-1.5 text-muted-foreground list-decimal pl-5">
-              <li>Turn on <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noreferrer">2-Step Verification</a>.</li>
-              <li>Create an app password (choose “Mail”) at <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>.</li>
-              <li>Paste it into <b>Settings → Your sending email</b> and save.</li>
-            </ol>
-            <p className="text-xs text-muted-foreground">You can change it anytime in Settings.</p>
+          {needAppPw?.label === "your" ? (
+            <div className="space-y-3 py-1 text-sm">
+              <p className="text-muted-foreground">
+                Emails send from <span className="text-foreground font-medium">your own Gmail</span>, so you need a Gmail
+                <b> app password</b> (not your normal password). One-time setup:
+              </p>
+              <ol className="space-y-1.5 text-muted-foreground list-decimal pl-5">
+                <li>Turn on <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/signinoptions/two-step-verification" target="_blank" rel="noreferrer">2-Step Verification</a>.</li>
+                <li>Create an app password (choose “Mail”) at <a className="text-violet-400 hover:underline" href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>.</li>
+                <li>Paste it into <b>Settings → Your sending email</b> and save.</li>
+              </ol>
+              <p className="text-xs text-muted-foreground">You can change it anytime in Settings.</p>
+            </div>
+          ) : (
+            <div className="space-y-3 py-1 text-sm">
+              <p className="text-muted-foreground">
+                {needAppPw?.sender} needs to sign in and add their own Gmail app password in <b>Settings → Your sending email</b> before anyone can send through this shared inbox.
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNeedAppPw(null)}>Later</Button>
+            {needAppPw?.label === "your" && <Button onClick={() => { setNeedAppPw(null); router.push("/settings"); }}>Go to Settings</Button>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Choose which identity to send from — own email, or a shared inbox */}
+      <Dialog open={chooseSenderOpen} onOpenChange={setChooseSenderOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send from</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            <button
+              type="button"
+              onClick={() => setChosenSender("")}
+              className={`w-full text-left rounded-lg border px-3 py-2.5 text-sm transition-colors ${chosenSender === "" ? "border-violet-500 bg-violet-500/10" : "border-border hover:bg-muted/40"}`}
+            >
+              <span className="font-medium">Your own email</span>
+              <span className="block text-xs text-muted-foreground">{myEmail || "your Gmail"}</span>
+            </button>
+            {SHARED_SENDERS.map((s) => (
+              <button
+                key={s.email}
+                type="button"
+                onClick={() => setChosenSender(s.email)}
+                className={`w-full text-left rounded-lg border px-3 py-2.5 text-sm transition-colors ${chosenSender === s.email ? "border-violet-500 bg-violet-500/10" : "border-border hover:bg-muted/40"}`}
+              >
+                <span className="font-medium">{s.label}&apos;s email</span>
+                <span className="block text-xs text-muted-foreground">{s.email} · will show as sent by you in the Sending page</span>
+              </button>
+            ))}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNeedAppPw(false)}>Later</Button>
-            <Button onClick={() => { setNeedAppPw(false); router.push("/settings"); }}>Go to Settings</Button>
+            <Button variant="outline" onClick={() => setChooseSenderOpen(false)}>Cancel</Button>
+            <Button onClick={() => scheduleSend(chosenSender)} disabled={scheduling} className="bg-violet-600 hover:bg-violet-700 text-white">
+              {scheduling && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              <Send className="h-4 w-4 mr-1.5" />Send All ({readyCount})
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

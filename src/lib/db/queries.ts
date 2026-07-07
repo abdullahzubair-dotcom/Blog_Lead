@@ -1596,10 +1596,12 @@ export async function scheduleWorkflowEmails(
   emailIdsInOrder: string[],
   times: string[],
   senderEmail?: string,
+  sentByEmail?: string, // who actually clicked Send — tracked separately when sending as a shared inbox
 ): Promise<void> {
   for (let i = 0; i < emailIdsInOrder.length && i < times.length; i++) {
     const patch: Record<string, unknown> = { scheduled_at: times[i], status: "scheduled", error: null };
     if (senderEmail) patch.sender_email = senderEmail; // whose mailbox this sends from
+    if (sentByEmail) patch.sent_by_email = sentByEmail;
     await supabaseAdmin.from("outreach_emails").update(patch).eq("id", emailIdsInOrder[i]);
   }
 }
@@ -1638,7 +1640,7 @@ export async function getSendingStatus(workflowId?: string): Promise<{
 }> {
   const base = () => {
     let q = supabaseAdmin.from("outreach_emails").select(
-      "id, workflow_id, author_id, sender_email, subject, status, scheduled_at, sent_at, error, replied_at, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
+      "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, scheduled_at, sent_at, error, replied_at, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
     );
     if (workflowId) q = q.eq("workflow_id", workflowId) as any;
     return q;

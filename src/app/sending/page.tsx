@@ -21,6 +21,8 @@ interface StatusEmail {
   id: string;
   author_id?: string;
   sender_email?: string | null;
+  sender_label?: string | null; // e.g. "Zain" when sent through a shared inbox
+  sent_by_email?: string | null; // who actually clicked Send, if different from sender_email
   author_name: string;
   publication: string;
   subject: string;
@@ -236,7 +238,8 @@ export default function SendingPage() {
   const replyRate = status?.replyRate ?? 0;
   const nextUp = status?.upcoming?.[0];
 
-  // Group the queue by who's sending (each user sends their own). Expandable per sender.
+  // Group the queue by who's sending (each user sends their own, or a shared inbox like
+  // Zain's). Expandable per sender.
   const upcoming = status?.upcoming ?? [];
   const senderGroups = Object.entries(
     upcoming.reduce((acc, e) => {
@@ -245,6 +248,10 @@ export default function SendingPage() {
       return acc;
     }, {} as Record<string, StatusEmail[]>)
   );
+  function senderGroupLabel(email: string, emails: StatusEmail[]): string {
+    const label = emails[0]?.sender_label;
+    return label ? `${label} (${email})` : email;
+  }
 
   return (
     <div className="space-y-6">
@@ -337,7 +344,7 @@ export default function SendingPage() {
                       className="w-full flex items-center gap-2 px-4 py-2 bg-muted/20 border-y border-border text-left hover:bg-muted/30"
                     >
                       <ChevronRight className={`h-3.5 w-3.5 text-muted-foreground/60 transition-transform shrink-0 ${collapsed ? "" : "rotate-90"}`} />
-                      <span className="text-xs font-semibold truncate flex-1" title={sender}>{sender}</span>
+                      <span className="text-xs font-semibold truncate flex-1" title={sender}>{senderGroupLabel(sender, emails)}</span>
                       <span className="text-[10px] text-muted-foreground rounded-full bg-muted px-1.5">{emails.length}</span>
                     </button>
                     {!collapsed && (
@@ -419,7 +426,13 @@ export default function SendingPage() {
                     <p className="text-xs text-muted-foreground truncate">
                       {e.status === "failed" ? <span className="text-red-400">{e.error}</span> : (e.subject || e.publication)}
                     </p>
-                    {e.sender_email && <p className="text-[10px] text-muted-foreground/70 truncate">from {e.sender_email}{e.status === "sent" && e.sent_at ? ` · ${sentLabel(e.sent_at)}` : ""}</p>}
+                    {e.sender_email && (
+                      <p className="text-[10px] text-muted-foreground/70 truncate">
+                        from {e.sender_label ?? e.sender_email}
+                        {e.sender_label && e.sent_by_email && e.sent_by_email !== e.sender_email && ` by ${e.sent_by_email}`}
+                        {e.status === "sent" && e.sent_at ? ` · ${sentLabel(e.sent_at)}` : ""}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <div className="text-right">
