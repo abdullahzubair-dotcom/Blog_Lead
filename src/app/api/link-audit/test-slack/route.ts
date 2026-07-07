@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/db/supabase";
-import { postToSlack, postAuditDigest, getSlackMap } from "@/lib/linkaudit/slack";
+import { postToSlack, postAuditDigest, resolveAuthorIds, hasBotToken } from "@/lib/linkaudit/slack";
+
+// Known site authors used to exercise the fuzzy matcher in the tag test even when the
+// latest run's findings happen to be on authorless pages.
+const SAMPLE_AUTHORS = ["Tooba Siddiqui", "Saba Sohail", "Areeba Imran", "Arooj Ishtiaq", "Ryan Hayden", "Umaima Shah", "Sameer Sohail"];
 
 // POST — send a test message to the configured Slack webhook. If a completed run exists,
-// re-sends its real digest (the truest test); otherwise a simple hello message. Any mapped
-// author IDs get a tag-test line so real pings can be verified in one click — Slack
-// silently DELETES mentions with invalid IDs, so a visible blue @mention proves the ID.
+// re-sends its real digest (the truest test); otherwise a simple hello message. Then a
+// tag test: resolves author names → member IDs (manual map first, then fuzzy search of
+// the workspace directory via the bot token) and posts the result — a blue @mention
+// proves resolution; "no match" means that name isn't findable in the workspace.
 export async function POST() {
   const { data: lastRun } = await supabaseAdmin
     .from("link_audit_runs").select("id").eq("status", "completed")
@@ -16,13 +21,18 @@ export async function POST() {
     : await postToSlack(":link: *imagine.art link audit* — test message from GenAI Scout. The webhook works; daily digests will arrive here.");
   if (!res.ok) return NextResponse.json({ ok: false, error: res.error }, { status: 500 });
 
-  const map = await getSlackMap();
-  const entries = Object.entries(map).slice(0, 5);
-  if (entries.length > 0) {
-    await postToSlack(
-      `:label: *Tag test* — each mapped author should appear as a blue @mention (if a name shows blank, its member ID is wrong):\n${entries.map(([name, id]) => `• ${name} → <@${id}>`).join("\n")}`
-    );
-  }
+  // Authors from the latest run's findings + known site authors, deduped.
+  const { data: found } = lastRun
+    ? await supabaseAdmin.from("link_audit_findings").select("page_author").eq("run_id", lastRun.id).not("page_author", "is", null)
+    : { data: [] as any[] };
+  const authors = [...new Set([...(found ?? []).map((r: any) => r.page_author), ...SAMPLE_AUTHORS])] as string[];
 
-  return NextResponse.json({ ok: true, usedRealDigest: !!lastRun, tagTestSent: entries.length });
+  const botConfigured = await hasBotToken();
+  const resolved = await resolveAuthorIds(authors);
+  const lines = authors.map((a) => resolved[a] ? `• ${a} → <@${resolved[a]}>` : `• ${a} → _no match in workspace_`);
+  await postToSlack(
+    `:label: *Author tag test* — ${botConfigured ? "fuzzy-matched against the workspace directory" : "no bot token set: manual map only (add an xoxb- token on the Link Audit page for automatic matching)"}:\n${lines.join("\n")}`
+  );
+
+  return NextResponse.json({ ok: true, usedRealDigest: !!lastRun, botConfigured, matched: Object.keys(resolved).length, tested: authors.length });
 }

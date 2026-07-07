@@ -40,9 +40,11 @@ export default function LinkAuditPage() {
   const [testing, setTesting] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Settings — webhook replace (write-only) + author→Slack-ID tag map
+  // Settings — webhook + bot token (both write-only) + manual author→Slack-ID overrides
   const [hasWebhook, setHasWebhook] = useState<boolean | null>(null);
   const [webhookInput, setWebhookInput] = useState("");
+  const [hasBotToken, setHasBotToken] = useState<boolean | null>(null);
+  const [botTokenInput, setBotTokenInput] = useState("");
   const [mapText, setMapText] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -66,6 +68,7 @@ export default function LinkAuditPage() {
     fetch("/api/link-audit/settings").then((r) => (r.ok ? r.json() : null)).then((d) => {
       if (!d) return;
       setHasWebhook(d.hasWebhook);
+      setHasBotToken(d.hasBotToken);
       setMapText(Object.entries(d.slackMap ?? {}).map(([k, v]) => `${k} = ${v}`).join("\n"));
     }).catch(() => {});
   }, [loadStatus, loadFindings]);
@@ -107,13 +110,15 @@ export default function LinkAuditPage() {
     }
     const body: Record<string, unknown> = { slackMap };
     if (webhookInput.trim()) body.webhook = webhookInput.trim();
+    if (botTokenInput.trim()) body.bot_token = botTokenInput.trim();
     const res = await fetch("/api/link-audit/settings", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const d = await res.json().catch(() => ({}));
     if (res.ok) {
-      toast.success("Settings saved.");
+      toast.success(d.directoryUsers ? `Settings saved — found ${d.directoryUsers} workspace members for auto-tagging.` : "Settings saved.");
       if (webhookInput.trim()) { setHasWebhook(true); setWebhookInput(""); }
+      if (botTokenInput.trim()) { setHasBotToken(true); setBotTokenInput(""); }
     } else toast.error(d.error ?? "Save failed.");
     setSavingSettings(false);
   }
@@ -265,15 +270,35 @@ export default function LinkAuditPage() {
           <p className="text-xs text-muted-foreground">Stored encrypted; never displayed back. Leave blank to keep the current one.</p>
         </div>
         <div className="space-y-1.5">
-          <Label>Author tags <span className="text-muted-foreground font-normal">(so digests @-mention writers)</span></Label>
+          <Label className="flex items-center gap-2">
+            Bot token for automatic @-tagging
+            {hasBotToken !== null && (
+              <Badge variant="outline" className={hasBotToken ? "text-green-400 border-green-500/30 text-[10px]" : "text-amber-400 border-amber-500/30 text-[10px]"}>
+                {hasBotToken ? "configured — auto-matching on" : "not set — names shown as plain text"}
+              </Badge>
+            )}
+          </Label>
+          <Input
+            type="password"
+            placeholder="xoxb-… (Slack app bot token with the users:read scope)"
+            value={botTokenInput}
+            onChange={(e) => setBotTokenInput(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            With a token, digests search the workspace member list and fuzzy-match author names to real users automatically —
+            no manual mapping needed. Create one at api.slack.com/apps → OAuth & Permissions → add <code>users:read</code> → install → copy the Bot User OAuth Token. Stored encrypted.
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Manual overrides <span className="text-muted-foreground font-normal">(optional — wins over fuzzy matching)</span></Label>
           <Textarea
-            placeholder={"One per line:\nRyan Hayden = U0123ABCDEF\nUmaima Shah = U0456GHIJKL"}
-            className="min-h-[100px] font-mono text-xs"
+            placeholder={"One per line, only needed when auto-match can't find someone:\nRyan Hayden = U0123ABCDEF"}
+            className="min-h-[80px] font-mono text-xs"
             value={mapText}
             onChange={(e) => setMapText(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            Webhooks can&apos;t look up Slack users, so tagging needs each writer&apos;s member ID (Slack profile → ⋯ → Copy member ID). Unmapped authors appear as plain names.
+            Member ID from Slack profile → ⋯ → Copy member ID. Authors that resolve neither way appear as plain names.
           </p>
         </div>
         <Button onClick={saveSettings} disabled={savingSettings} size="sm">
