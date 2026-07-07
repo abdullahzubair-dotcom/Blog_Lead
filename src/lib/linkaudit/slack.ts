@@ -170,6 +170,7 @@ interface Finding {
   page_url: string; page_author: string | null;
   link_url: string; anchor_text: string | null; context_text: string | null;
   reason: string; http_status: number | null;
+  location_hint?: string | null;
 }
 
 const REASON_LABEL: Record<string, string> = {
@@ -196,9 +197,11 @@ function isProseContext(ctx: string): boolean {
 // Ask Haiku to pinpoint WHERE on the page a link sits, from its anchor + surrounding text —
 // "the 'View All' button in the ImagineArt for Teams section" beats a raw text quote,
 // especially when the same anchor text ("View All") appears many times on one page.
-async function aiLocateFinding(f: Finding): Promise<string | null> {
+// Exported: the run's finalize step computes this once per broken link and persists it
+// (findings.location_hint) so the page AND the digest show the same human explanation.
+export async function aiLocateFinding(f: Pick<Finding, "page_url" | "anchor_text" | "link_url" | "context_text">): Promise<string | null> {
   const key = process.env.OPENROUTER_API_KEY;
-  if (!key || key.length < 20 || !f.context_text) return null;
+  if (!key || key.length < 20) return null;
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -208,11 +211,11 @@ async function aiLocateFinding(f: Finding): Promise<string | null> {
         messages: [{
           role: "user",
           content: `A broken link was found on the page ${new URL(f.page_url).pathname}.
-Link text: "${f.anchor_text ?? ""}"
+Link text: "${f.anchor_text || "(none — likely an icon or image link)"}"
 Broken URL: ${f.link_url}
-Text surrounding the link on the page: "${f.context_text}"
+${f.context_text ? `Text surrounding the link on the page: "${f.context_text}"` : "No readable surrounding text was captured — the link probably sits in the site header, footer, or a social-icons row."}
 
-In ONE short phrase (max 16 words), tell a writer exactly where on the page this link sits, using only details visible in the surrounding text — e.g. "the 'View All' button next to the ImagineArt for Teams category heading" or "the Career link in the footer, after Help Center". Reply with ONLY the phrase. No placeholders, no quotes around the whole phrase.`,
+In ONE short phrase (max 18 words), tell a writer in plain human words exactly where on the page this link sits, e.g. "the 'View All' button next to the ImagineArt for Teams category heading" or "the YouTube icon in the site footer's social links". Reply with ONLY the phrase. No placeholders, no quotes around the whole phrase.`,
         }],
         max_tokens: 60,
         temperature: 0,
@@ -222,7 +225,7 @@ In ONE short phrase (max 16 words), tell a writer exactly where on the page this
     if (!res.ok) return null;
     const data = await res.json();
     const out = (data.choices?.[0]?.message?.content ?? "").trim().replace(/^["']|["']$/g, "");
-    return out && out.length < 160 && !/\[[^\]]+\]/.test(out) ? out : null;
+    return out && out.length < 170 && !/\[[^\]]+\]/.test(out) ? out : null;
   } catch {
     return null;
   }
@@ -242,7 +245,8 @@ async function renderFindings(findings: Finding[], resolved: Record<string, stri
     const first = fs[0];
     const label = REASON_LABEL[first.reason] ?? first.reason;
     lines.push(`• *Broken:* ${link}  _(${label})_`);
-    const location = aiCalls < MAX_AI_LOCATIONS ? (aiCalls++, await aiLocateFinding(first)) : null;
+    // Prefer the hint persisted at finalize; live AI call only for older runs without one.
+    const location = first.location_hint ?? (aiCalls < MAX_AI_LOCATIONS ? (aiCalls++, await aiLocateFinding(first)) : null);
     if (location) lines.push(`   📍 ${location}`);
     for (const f of fs.slice(0, 3)) {
       const ctx = (f.context_text ?? "").slice(0, 160);

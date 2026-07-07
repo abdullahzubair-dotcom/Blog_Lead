@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Unlink, Play, Loader2, Send, ExternalLink, ChevronRight, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Unlink, Play, Loader2, Send, ExternalLink, ChevronRight, CheckCircle2, XCircle, Clock, Square, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ interface Run {
 interface Finding {
   id: string; page_url: string; page_author: string | null; link_url: string;
   anchor_text: string | null; context_text: string | null; reason: string; http_status: number | null;
+  location_hint: string | null;
 }
 
 const REASON_LABEL: Record<string, string> = {
@@ -93,6 +94,14 @@ export default function LinkAuditPage() {
     else toast.error(d?.error ?? "Couldn't start.");
   }
 
+  const [stopping, setStopping] = useState(false);
+  async function stopRun() {
+    setStopping(true);
+    await fetch("/api/link-audit/stop", { method: "POST" }).catch(() => {});
+    toast.info("Stopping — finishes the current page, then halts (partial findings are kept).");
+    setTimeout(() => { setStopping(false); loadStatus(); }, 4000);
+  }
+
   async function sendTest() {
     setTesting(true);
     const d = await fetch("/api/link-audit/test-slack", { method: "POST" }).then((r) => r.json()).catch(() => null);
@@ -149,6 +158,12 @@ export default function LinkAuditPage() {
             {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             Send test to Slack
           </Button>
+          {running && (
+            <Button variant="outline" size="sm" onClick={stopRun} disabled={stopping} className="gap-1.5 border-red-500/40 text-red-400 hover:bg-red-500/10">
+              {stopping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
+              Stop
+            </Button>
+          )}
           <Button size="sm" onClick={runNow} disabled={starting || running} className="bg-violet-600 hover:bg-violet-700 text-white gap-1.5">
             {starting || running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
             {running ? "Running…" : "Run now"}
@@ -207,6 +222,13 @@ export default function LinkAuditPage() {
                   <span className="text-[10px] text-muted-foreground shrink-0">on {fs.length} page{fs.length === 1 ? "" : "s"}</span>
                 </summary>
                 <div className="px-4 pb-3 pl-11 space-y-2">
+                  {/* Human explanation of where the link sits — written by AI at run finish */}
+                  {fs.find((f) => f.location_hint)?.location_hint && (
+                    <p className="text-xs text-violet-300 flex items-start gap-1.5">
+                      <MapPin className="h-3.5 w-3.5 shrink-0 mt-px" />
+                      {fs.find((f) => f.location_hint)!.location_hint}
+                    </p>
+                  )}
                   {fs.map((f) => (
                     <div key={f.id} className="text-xs space-y-0.5">
                       <p>
@@ -214,9 +236,9 @@ export default function LinkAuditPage() {
                           {new URL(f.page_url).pathname}<ExternalLink className="h-2.5 w-2.5 opacity-60" />
                         </a>
                         <span className="text-muted-foreground"> — by {f.page_author ?? <i>no author on file</i>}</span>
-                        {f.anchor_text && <span className="text-muted-foreground"> — link text: &quot;{f.anchor_text.slice(0, 60)}&quot;</span>}
+                        {f.anchor_text?.trim() && <span className="text-muted-foreground"> — link text: &quot;{f.anchor_text.slice(0, 60)}&quot;</span>}
                       </p>
-                      {f.context_text && <p className="text-muted-foreground/70 italic line-clamp-2">…{f.context_text}…</p>}
+                      {!f.location_hint && f.context_text && <p className="text-muted-foreground/70 italic line-clamp-2">…{f.context_text}…</p>}
                     </div>
                   ))}
                 </div>
@@ -237,6 +259,7 @@ export default function LinkAuditPage() {
               <button key={r.id} onClick={() => loadFindings(r.id)} className={`w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/30 ${viewRunId === r.id ? "bg-muted/40" : ""}`}>
                 {r.status === "completed" ? <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
                   : r.status === "failed" ? <XCircle className="h-4 w-4 text-red-400 shrink-0" />
+                  : r.status === "stopped" ? <Square className="h-4 w-4 text-amber-400 shrink-0" />
                   : <Clock className="h-4 w-4 text-blue-400 shrink-0" />}
                 <span className="text-sm shrink-0">{fmt(r.started_at)}</span>
                 <span className="text-xs text-muted-foreground flex-1 truncate">

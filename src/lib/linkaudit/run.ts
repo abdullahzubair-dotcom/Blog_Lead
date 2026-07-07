@@ -24,6 +24,7 @@ const LINK_CONCURRENCY = 8;
 const STATE_KEY = "linkaudit:state";
 const CHECKED_KEY = "linkaudit:checked";
 const FP_KEY = "linkaudit:fp";
+const STOP_KEY = "linkaudit:stop";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -109,18 +110,24 @@ export function extractLinks(html: string, pageUrl: string): ExtractedLink[] {
     if (url === pageUrl || seen.has(url)) continue;
     seen.add(url);
 
-    const anchor = m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
-    // Surrounding text: strip tags in a window around the match so the Slack digest can
-    // show WHERE on the page the link lives. The slice can split a tag at either edge —
-    // trim to the first ">" / last "<" so half-open tags (SVG path data etc.) can't leak
-    // into the "text".
+    const anchor = m[2].replace(/<[^>]+>/g, " ").replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    // Surrounding text: strip tags in a window around the match so the digest can show
+    // WHERE on the page the link lives. The slice can split a tag OR a <script> block at
+    // either edge — trim half-open tags, drop partial script bodies, and if what's left
+    // still reads like JavaScript, drop the context entirely (better nothing than JS soup).
     const winStart = Math.max(0, m.index - 400);
     let win = html.slice(winStart, m.index + m[0].length + 400);
     const firstGt = win.indexOf(">");
     if (firstGt !== -1 && firstGt < win.indexOf("<")) win = win.slice(firstGt + 1);
     const lastLt = win.lastIndexOf("<");
     if (lastLt > win.lastIndexOf(">")) win = win.slice(0, lastLt);
-    const context = win.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
+    win = win.replace(/<script[\s\S]*?<\/script>/gi, " ");
+    const closeScript = win.search(/<\/script/i);
+    const openScript = win.search(/<script/i);
+    if (closeScript !== -1 && (openScript === -1 || openScript > closeScript)) win = win.slice(closeScript + 9); // window started mid-script
+    if (openScript !== -1 && win.slice(openScript).search(/<\/script/i) === -1) win = win.slice(0, Math.max(openScript, 0)); // window ends mid-script
+    let context = win.replace(/<[^>]+>/g, " ").replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
+    if (/function\s*\(|document\.getElementById|window\.addEventListener|classList\.|appendChild|=>\s*\{|\bvar\s+\w+\s*=/.test(context)) context = "";
     out.push({ url, anchor, context });
   }
   return out;
@@ -213,6 +220,56 @@ async function getFingerprint(u: URL, cache: FingerprintMap): Promise<Fingerprin
   }
   cache[key] = fp;
   return fp;
+}
+
+// AI fallback for author detection: only fires when the deterministic byline patterns miss
+// on a blog page (never on product pages), and only sees the byline-likely slices of the
+// page (top of article + the end where author-bio boxes live), not the whole 1MB+ HTML.
+export async function aiExtractAuthor(html: string): Promise<string | null> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key || key.length < 20) return null;
+  const text = html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  if (text.length < 200) return null;
+  const slice = `${text.slice(0, 3500)}\n…\n${text.slice(-3500)}`;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        messages: [{
+          role: "user",
+          content: `Below is text from the top and bottom of a blog article page. Who is the article's AUTHOR (the byline of THIS article — not names merely mentioned in the content, not related-article authors)? Reply with ONLY the author's full name, or NONE if no byline is present.\n\n${slice}`,
+        }],
+        max_tokens: 20,
+        temperature: 0,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const out = (data.choices?.[0]?.message?.content ?? "").trim();
+    if (!out || /^none$/i.test(out)) return null;
+    return /^[A-Za-zÀ-ž'’.-]+(\s+[A-Za-zÀ-ž'’.-]+){1,3}$/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Stop flag (durable — works across serverless instances & QStash chunks) ──────
+
+export async function requestAuditStop(): Promise<void> {
+  const r = redis();
+  if (r) await r.set(STOP_KEY, "1", { ex: 3600 }).catch(() => {});
+}
+async function isAuditStopRequested(): Promise<boolean> {
+  const r = redis();
+  if (!r) return false;
+  return !!(await r.get(STOP_KEY).catch(() => null));
+}
+async function clearAuditStop(): Promise<void> {
+  const r = redis();
+  if (r) await r.del(STOP_KEY).catch(() => {});
 }
 
 export interface LinkVerdict { verdict: "ok" | "404" | "410" | "soft" | "home" | "unreach"; status?: number }
@@ -325,6 +382,7 @@ export async function startAudit(): Promise<{ runId: string; pagesTotal: number 
   };
   pushLog(state, `Sitemap fetched — ${pages.length} pages queued for crawling`);
   await saveState(state);
+  await clearAuditStop(); // stale stop flag from a previous run must not kill this one
   return { runId: run.id, pagesTotal: pages.length };
 }
 
@@ -343,6 +401,20 @@ export async function processAuditChunk(): Promise<void> {
   const queue = new PQueue({ concurrency: LINK_CONCURRENCY });
 
   while (state.index < state.pages.length && Date.now() < deadline) {
+    // Durable stop — the page's Stop button sets a Redis flag any instance sees.
+    if (await isAuditStopRequested()) {
+      pushLog(state, `Stopped by user at page ${state.index}/${state.pages.length}.`);
+      await saveState(state);
+      await supabaseAdmin.from("link_audit_runs").update({
+        status: "stopped", finished_at: new Date().toISOString(),
+        pages_checked: state.index, links_checked: state.linksChecked,
+        broken_found: state.broken, unreachable: state.unreachable,
+      }).eq("id", state.runId);
+      await clearAuditState();
+      await clearAuditStop();
+      return;
+    }
+
     const pageUrl = state.pages[state.index];
     const res = await fetchRaw(pageUrl, 15_000);
 
@@ -353,7 +425,13 @@ export async function processAuditChunk(): Promise<void> {
       for (const [path, name] of Object.entries(cards)) {
         if (!state.authorMap[`!${path}`] && !state.authorMap[path]) state.authorMap[path] = name;
       }
-      const ownAuthor = extractPageAuthor(res.html);
+      // Deterministic byline patterns first (free); Haiku fallback only when they miss on
+      // a blog post — never for product pages, which genuinely have no author.
+      let ownAuthor = extractPageAuthor(res.html);
+      if (!ownAuthor && pageUrl.includes("/blogs/")) {
+        ownAuthor = await aiExtractAuthor(res.html);
+        if (ownAuthor) pushLog(state, `AI byline fallback found author "${ownAuthor}" on ${pageUrl.slice(-60)}`);
+      }
       if (ownAuthor) {
         try { state.authorMap[`!${new URL(pageUrl).pathname.replace(/\/$/, "")}`] = ownAuthor; } catch { /* ignore */ }
       }
@@ -380,9 +458,14 @@ export async function processAuditChunk(): Promise<void> {
       await queue.onIdle();
 
       if (findings.length > 0) {
+        // Stamp the best author we know RIGHT NOW (the page's own byline, extracted just
+        // above) so the live findings view is correct mid-run; the finalize pass still
+        // backfills pages whose author only surfaces later via other pages' cards.
+        const pagePath = (() => { try { return new URL(pageUrl).pathname.replace(/\/$/, ""); } catch { return ""; } })();
+        const knownAuthor = ownAuthor ?? state.authorMap[`!${pagePath}`] ?? state.authorMap[pagePath] ?? null;
         await supabaseAdmin.from("link_audit_findings").upsert(
           findings.map((f) => ({
-            run_id: state.runId, page_url: pageUrl,
+            run_id: state.runId, page_url: pageUrl, page_author: knownAuthor,
             link_url: f.link.url, anchor_text: f.link.anchor, context_text: f.link.context,
             reason: VERDICT_REASON[f.verdict.verdict], http_status: f.verdict.status ?? null,
           })),
@@ -435,6 +518,30 @@ export async function processAuditChunk(): Promise<void> {
       if (author) await supabaseAdmin.from("link_audit_findings").update({ page_author: author }).eq("id", row.id);
     } catch { /* ignore */ }
   }
+
+  // AI location hints — one Haiku call per unique broken link (capped), persisted so the
+  // page and the Slack digest both show the same plain-words "where is this link".
+  try {
+    const { aiLocateFinding } = await import("./slack");
+    const { data: allFindings } = await supabaseAdmin
+      .from("link_audit_findings")
+      .select("id, page_url, link_url, anchor_text, context_text, location_hint")
+      .eq("run_id", state.runId);
+    const byLink = new Map<string, any[]>();
+    for (const f of allFindings ?? []) (byLink.get(f.link_url) ?? byLink.set(f.link_url, []).get(f.link_url)!).push(f);
+    let hintCalls = 0;
+    for (const [link, fs] of byLink) {
+      if (hintCalls >= 30) break;
+      if (fs.every((f) => f.location_hint)) continue;
+      // Base the hint on the occurrence with the richest context.
+      const best = [...fs].sort((a, b) => (b.context_text?.length ?? 0) - (a.context_text?.length ?? 0))[0];
+      hintCalls++;
+      const hint = await aiLocateFinding(best);
+      if (hint) {
+        await supabaseAdmin.from("link_audit_findings").update({ location_hint: hint }).eq("run_id", state.runId).eq("link_url", link);
+      }
+    }
+  } catch { /* hints are best-effort */ }
 
   await supabaseAdmin.from("link_audit_runs").update({
     status: "completed", finished_at: new Date().toISOString(),
