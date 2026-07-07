@@ -280,8 +280,19 @@ export async function checkLink(url: string, fpCache: FingerprintMap): Promise<L
 
   const res = await fetchRaw(url);
   if ("error" in res) return { verdict: "unreach" };
-  if (res.status === 404) return { verdict: "404", status: 404 };
-  if (res.status === 410) return { verdict: "410", status: 410 };
+  if (res.status === 404 || res.status === 410) {
+    // Some SPAs answer 404 while shipping their full working app (app.pixverse.ai/onboard
+    // does this) — the browser "recovers" to a normal page and a human sees nothing broken.
+    // Only report a 404/410 whose BODY also looks like an error page: tiny, titleless, or
+    // not-found wording in title/h1. Healthy-shell 404s count as unverifiable instead.
+    // Tradeoff: a branded 404 page with no "404/not found" wording in title or h1 slips
+    // through — accepted, since falsely pinging writers is worse than a rare miss.
+    const t = titleOf(res.html);
+    const h = h1Of(res.html);
+    const looksLikeErrorPage = res.html.length < 2048 || !t || NOT_FOUND_RE.test(t) || NOT_FOUND_RE.test(h);
+    if (looksLikeErrorPage) return { verdict: res.status === 404 ? "404" : "410", status: res.status };
+    return { verdict: "unreach", status: res.status };
+  }
   // Bot-blocks, rate limits, server errors: NOT reported as broken (false-positive risk).
   if (res.status !== 200) return { verdict: "unreach", status: res.status };
 
