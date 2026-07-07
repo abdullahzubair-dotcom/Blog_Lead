@@ -133,7 +133,14 @@ export default function LinkAuditPage() {
   }
 
   // Group findings by broken link — a dead footer link is one group, not many rows.
-  const groups = Object.entries(findings.reduce((acc, f) => {
+  // Unreachable (bot-blocked/timeout) links are listed separately, never as broken.
+  const broken = findings.filter((f) => f.reason !== "unreachable");
+  const unreachable = findings.filter((f) => f.reason === "unreachable");
+  const groups = Object.entries(broken.reduce((acc, f) => {
+    (acc[f.link_url] ??= []).push(f);
+    return acc;
+  }, {} as Record<string, Finding[]>));
+  const unreachGroups = Object.entries(unreachable.reduce((acc, f) => {
     (acc[f.link_url] ??= []).push(f);
     return acc;
   }, {} as Record<string, Finding[]>));
@@ -247,6 +254,27 @@ export default function LinkAuditPage() {
           </div>
         )}
       </div>
+
+      {/* Unreachable — couldn't be verified, listed for a human spot-check */}
+      {unreachGroups.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <p className="text-sm font-medium">Couldn&apos;t verify</p>
+            <Badge variant="outline" className="text-amber-400 border-amber-500/30">{unreachGroups.length}</Badge>
+            <p className="text-xs text-muted-foreground">bot-blocked or timed out — not counted as broken, worth a quick manual check</p>
+          </div>
+          <div className="border border-border rounded-xl divide-y divide-border">
+            {unreachGroups.map(([link, fs], i) => (
+              <div key={link} className="flex items-center gap-3 px-4 py-2 text-xs">
+                <span className="text-muted-foreground shrink-0 w-6 text-right">{i + 1}.</span>
+                <a href={link} target="_blank" rel="noreferrer" className="text-amber-400/90 hover:underline truncate flex-1">{link}</a>
+                <span className="text-muted-foreground shrink-0">{fs[0].http_status ? `HTTP ${fs[0].http_status}` : "timeout"}</span>
+                <span className="text-muted-foreground/60 shrink-0">on {fs.length} page{fs.length === 1 ? "" : "s"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Run history */}
       <div className="space-y-2">

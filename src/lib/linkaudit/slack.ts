@@ -326,7 +326,9 @@ export async function postAuditDigest(runId: string): Promise<{ ok: boolean; err
   ]);
   if (!run) return { ok: false, error: "run not found" };
 
-  const fs = (findings ?? []) as Finding[];
+  const all = (findings ?? []) as Finding[];
+  const fs = all.filter((f) => f.reason !== "unreachable");
+  const unreach = all.filter((f) => f.reason === "unreachable");
   const authors = [...new Set(fs.map((f) => f.page_author).filter(Boolean))] as string[];
   // Auto-@: manual map overrides, then fuzzy match against the workspace directory.
   const resolved = await resolveAuthorIds(authors);
@@ -341,7 +343,18 @@ export async function postAuditDigest(runId: string): Promise<{ ok: boolean; err
   } else {
     text += `\n\nAll clean today — no broken links found. :white_check_mark:`;
   }
-  if (run.unreachable > 0) {
+  // Unreachable links listed in full so a human can spot-check them — bot walls, timeouts,
+  // and odd statuses that the checker refuses to call broken.
+  if (unreach.length > 0) {
+    const byLink = new Map<string, Finding[]>();
+    for (const f of unreach) (byLink.get(f.link_url) ?? byLink.set(f.link_url, []).get(f.link_url)!).push(f);
+    const lines = [...byLink.entries()].map(([link, fs2], i) => {
+      const status = fs2[0].http_status ? ` (HTTP ${fs2[0].http_status})` : " (timeout/blocked)";
+      const pages = fs2.length === 1 ? new URL(fs2[0].page_url).pathname : `${fs2.length} pages`;
+      return `${i + 1}. ${link}${status} — on ${pages}`;
+    });
+    text += `\n\n:warning: *Couldn't verify (${byLink.size}) — not counted as broken, worth a human spot-check:*\n${lines.join("\n")}`;
+  } else if (run.unreachable > 0) {
     text += `\n\n_${run.unreachable} links couldn't be verified (bot-blocked or timed out) — not counted as broken._`;
   }
 

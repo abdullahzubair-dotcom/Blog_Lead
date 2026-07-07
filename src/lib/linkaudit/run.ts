@@ -54,7 +54,49 @@ interface CheckedMap { [urlKey: string]: { v: string; s?: number; n: number } }
 interface Fingerprint { status: number; title: string; h1: string; len: number; usable: boolean }
 interface FingerprintMap { [hostPrefix: string]: Fingerprint }
 
-export interface ExtractedLink { url: string; anchor: string; context: string }
+export interface LinkOccurrence { anchor: string; zone: string; heading: string | null }
+export interface ExtractedLink { url: string; anchor: string; context: string; occurrences: LinkOccurrence[] }
+
+// Which structural landmark encloses position i? Regex-level check: an opening tag more
+// recent than its closing tag means we're inside it.
+function zoneAt(html: string, i: number): string {
+  for (const tag of ["nav", "header", "footer", "aside"]) {
+    const lo = html.lastIndexOf(`<${tag}`, i);
+    const lc = html.lastIndexOf(`</${tag}`, i);
+    if (lo > lc) return tag;
+  }
+  return "main";
+}
+
+const HEADING_RE = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/g;
+function nearestHeadingAbove(html: string, i: number): string | null {
+  let last: string | null = null;
+  HEADING_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = HEADING_RE.exec(html)) !== null) {
+    if (m.index >= i) break;
+    const t = m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (t) last = t.slice(0, 70);
+  }
+  return last;
+}
+
+const ZONE_PHRASE: Record<string, string> = {
+  nav: "in the top navigation bar", header: "in the page header",
+  footer: "in the page footer", aside: "in a sidebar",
+};
+
+// Human sentence built from real DOM landmarks — accurate by construction, no AI guessing.
+export function describeOccurrences(occ: LinkOccurrence[]): string | null {
+  if (occ.length === 0) return null;
+  const parts = occ.slice(0, 3).map((o) => {
+    const what = o.anchor ? `the "${o.anchor.slice(0, 50)}" link` : "an icon/image link";
+    const where = ZONE_PHRASE[o.zone] ?? (o.heading ? `in the "${o.heading}" section` : "in the main content");
+    return `${what} ${where}`;
+  });
+  const extra = occ.length > 3 ? `; +${occ.length - 3} more spots` : "";
+  return `${parts.join("; also ")}${extra}${occ.length > 1 ? ` (${occ.length} places on this page)` : ""}`;
+}
 
 // ─── Fetch helpers ─────────────────────────────────────────────────────────────
 
@@ -96,7 +138,7 @@ const SKIP_HREF = /^(#|mailto:|tel:|javascript:|data:|blob:)/i;
 
 export function extractLinks(html: string, pageUrl: string): ExtractedLink[] {
   const out: ExtractedLink[] = [];
-  const seen = new Set<string>();
+  const byUrl = new Map<string, ExtractedLink>();
   const re = /<a\s[^>]*?href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null && out.length < MAX_LINKS_PER_PAGE) {
@@ -107,10 +149,18 @@ export function extractLinks(html: string, pageUrl: string): ExtractedLink[] {
     if (!/^https?:$/.test(abs.protocol)) continue;
     abs.hash = "";
     const url = abs.href;
-    if (url === pageUrl || seen.has(url)) continue;
-    seen.add(url);
+    if (url === pageUrl) continue;
 
     const anchor = m[2].replace(/<[^>]+>/g, " ").replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    // A repeated URL (nav + button + footer) keeps ONE entry but records every occurrence's
+    // structural location, so "where is this link" covers all the places it appears.
+    const existing = byUrl.get(url);
+    if (existing) {
+      if (existing.occurrences.length < 4) {
+        existing.occurrences.push({ anchor, zone: zoneAt(html, m.index), heading: nearestHeadingAbove(html, m.index) });
+      }
+      continue;
+    }
     // Surrounding text: strip tags in a window around the match so the digest can show
     // WHERE on the page the link lives. The slice can split a tag OR a <script> block at
     // either edge — trim half-open tags, drop partial script bodies, and if what's left
@@ -128,7 +178,12 @@ export function extractLinks(html: string, pageUrl: string): ExtractedLink[] {
     if (openScript !== -1 && win.slice(openScript).search(/<\/script/i) === -1) win = win.slice(0, Math.max(openScript, 0)); // window ends mid-script
     let context = win.replace(/<[^>]+>/g, " ").replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 220);
     if (/function\s*\(|document\.getElementById|window\.addEventListener|classList\.|appendChild|=>\s*\{|\bvar\s+\w+\s*=/.test(context)) context = "";
-    out.push({ url, anchor, context });
+    const entry: ExtractedLink = {
+      url, anchor, context,
+      occurrences: [{ anchor, zone: zoneAt(html, m.index), heading: nearestHeadingAbove(html, m.index) }],
+    };
+    byUrl.set(url, entry);
+    out.push(entry);
   }
   return out;
 }
@@ -455,6 +510,7 @@ export async function processAuditChunk(): Promise<void> {
       const links = extractLinks(res.html, pageUrl);
       const findings: Array<{ link: ExtractedLink; verdict: LinkVerdict }> = [];
 
+      const unreachables: Array<{ link: ExtractedLink; status?: number }> = [];
       await Promise.all(links.map((link) => queue.add(async () => {
         if (sitemapSet.has(link.url.replace(/\/$/, ""))) return; // known-live sitemap page
         const prior = checked[link.url];
@@ -462,6 +518,8 @@ export async function processAuditChunk(): Promise<void> {
           prior.n++;
           if (VERDICT_REASON[prior.v] && prior.n <= MAX_PAGES_PER_BROKEN_LINK) {
             findings.push({ link, verdict: { verdict: prior.v as LinkVerdict["verdict"], status: prior.s } });
+          } else if (prior.v === "unreach" && prior.n <= MAX_PAGES_PER_BROKEN_LINK) {
+            unreachables.push({ link, status: prior.s });
           }
           return;
         }
@@ -469,22 +527,34 @@ export async function processAuditChunk(): Promise<void> {
         checked[link.url] = { v: v.verdict, s: v.status, n: 1 };
         state.linksChecked++;
         if (VERDICT_REASON[v.verdict]) { state.broken++; findings.push({ link, verdict: v }); }
-        else if (v.verdict === "unreach") state.unreachable++;
+        else if (v.verdict === "unreach") { state.unreachable++; unreachables.push({ link, status: v.status }); }
       })));
       await queue.onIdle();
 
-      if (findings.length > 0) {
+      if (findings.length > 0 || unreachables.length > 0) {
         // Stamp the best author we know RIGHT NOW (the page's own byline, extracted just
         // above) so the live findings view is correct mid-run; the finalize pass still
         // backfills pages whose author only surfaces later via other pages' cards.
         const pagePath = (() => { try { return new URL(pageUrl).pathname.replace(/\/$/, ""); } catch { return ""; } })();
         const knownAuthor = ownAuthor ?? state.authorMap[`!${pagePath}`] ?? state.authorMap[pagePath] ?? null;
+        // Location built from real DOM landmarks at capture time — accurate by construction.
         await supabaseAdmin.from("link_audit_findings").upsert(
-          findings.map((f) => ({
-            run_id: state.runId, page_url: pageUrl, page_author: knownAuthor,
-            link_url: f.link.url, anchor_text: f.link.anchor, context_text: f.link.context,
-            reason: VERDICT_REASON[f.verdict.verdict], http_status: f.verdict.status ?? null,
-          })),
+          [
+            ...findings.map((f) => ({
+              run_id: state.runId, page_url: pageUrl, page_author: knownAuthor,
+              link_url: f.link.url, anchor_text: f.link.anchor, context_text: f.link.context,
+              occurrences: f.link.occurrences, location_hint: describeOccurrences(f.link.occurrences),
+              reason: VERDICT_REASON[f.verdict.verdict], http_status: f.verdict.status ?? null,
+            })),
+            // Unreachable (bot-blocked/timeout/odd status) — stored so the digest can list
+            // them for a human eyeball, but never counted or shown as broken.
+            ...unreachables.map((u) => ({
+              run_id: state.runId, page_url: pageUrl, page_author: knownAuthor,
+              link_url: u.link.url, anchor_text: u.link.anchor, context_text: u.link.context,
+              occurrences: u.link.occurrences, location_hint: describeOccurrences(u.link.occurrences),
+              reason: "unreachable", http_status: u.status ?? null,
+            })),
+          ],
           { onConflict: "run_id,page_url,link_url", ignoreDuplicates: true },
         );
       }
