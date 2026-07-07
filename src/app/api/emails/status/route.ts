@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSendingStatus } from "@/lib/db/queries";
+import { getSendingStatus, getSharedSenders } from "@/lib/db/queries";
 import { inferTimezone, localTimeLabel } from "@/lib/email/timezones";
 import { isGuessSource } from "@/lib/enrich/personFilter";
-import { findSharedSender } from "@/lib/email/sharedSenders";
 
 // Sending status for the progress page. Enriches upcoming/recent emails with the
 // recipient's inferred timezone + a local-time label so the UI can show "9:14 AM PKT".
 export async function GET(req: NextRequest) {
   const workflowId = req.nextUrl.searchParams.get("workflow_id") ?? undefined;
-  const { counts, upcoming, recent } = await getSendingStatus(workflowId);
+  const [{ counts, upcoming, recent }, sharedSenders] = await Promise.all([
+    getSendingStatus(workflowId),
+    getSharedSenders(), // labels shown even if since disabled — history should still read "from Zain"
+  ]);
+  const sharedLabelByEmail = new Map(sharedSenders.map((s) => [s.email, s.label]));
 
   const enrich = (e: any) => {
     const host = e.author?.domain?.host as string | undefined;
@@ -17,12 +20,11 @@ export async function GET(req: NextRequest) {
     const tz = e.author?.timezone || inferTimezone(host, country, "America/New_York");
     const when = e.scheduled_at ?? e.sent_at;
     const mailto = (e.author?.contacts ?? []).find((c: any) => c.type === "mailto");
-    const shared = e.sender_email ? findSharedSender(e.sender_email) : undefined;
     return {
       id: e.id,
       author_id: e.author_id,
       sender_email: e.sender_email ?? null,
-      sender_label: shared?.label ?? null, // e.g. "Zain" when sent through a shared inbox
+      sender_label: e.sender_email ? sharedLabelByEmail.get(e.sender_email) ?? null : null, // e.g. "Zain" when sent through a shared inbox
       sent_by_email: e.sent_by_email ?? null, // who actually clicked Send, if different from sender_email
       author_name: e.author?.full_name ?? "Unknown",
       publication: e.author?.domain?.name ?? host ?? "",

@@ -17,7 +17,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig, LinkedinMessage } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
 import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
-import { SHARED_SENDERS } from "@/lib/email/sharedSenders";
 
 // LinkedIn brand glyph (lucide dropped brand icons). Inherits color via currentColor.
 function Linkedin({ className }: { className?: string }) {
@@ -159,14 +158,17 @@ export default function EmailsPage() {
   // "Choose sender" popup — own email vs. a shared inbox (e.g. Zain's) — shown on every Send All
   const [chooseSenderOpen, setChooseSenderOpen] = useState(false);
   const [chosenSender, setChosenSender] = useState<string>(""); // "" = own email
+  const [sharedSenders, setSharedSenders] = useState<{ email: string; label: string }[]>([]);
 
   useEffect(() => {
     Promise.all([
       fetch("/api/workflows").then((r) => r.json()),
       fetch("/api/email-templates").then((r) => r.json()),
-    ]).then(([wfs, tmpls]) => {
+      fetch("/api/shared-senders").then((r) => (r.ok ? r.json() : [])),
+    ]).then(([wfs, tmpls, shared]) => {
       setWorkflows(wfs ?? []);
       setTemplates(tmpls ?? []);
+      setSharedSenders(shared ?? []);
     });
   }, []);
 
@@ -216,7 +218,7 @@ export default function EmailsPage() {
     });
     const data = await res.json().catch(() => ({}));
     if (data.needsAppPassword) {
-      const shared = SHARED_SENDERS.find((s) => s.email === data.sender);
+      const shared = sharedSenders.find((s) => s.email === data.sender);
       setNeedAppPw({ sender: data.sender ?? senderEmail, label: shared?.label ?? "your" }); // must add an app password for the chosen identity first
     } else if (res.ok && data.scheduled > 0) {
       const skipped = data.skippedContacted ? ` (${data.skippedContacted} skipped — already contacted elsewhere)` : "";
@@ -1062,7 +1064,7 @@ export default function EmailsPage() {
               <span className="font-medium">Your own email</span>
               <span className="block text-xs text-muted-foreground">{myEmail || "your Gmail"}</span>
             </button>
-            {SHARED_SENDERS.map((s) => (
+            {sharedSenders.map((s) => (
               <button
                 key={s.email}
                 type="button"

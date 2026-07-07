@@ -40,6 +40,7 @@ export async function sendEmail(opts: {
   body: string;
   fromName?: string;
   fromEmail?: string;
+  cc?: string;
 }): Promise<SendResult> {
   const tx = getTransport();
   if (!tx) return { ok: false, error: "SMTP not configured (missing SMTP_HOST/USER/PASS)" };
@@ -48,6 +49,7 @@ export async function sendEmail(opts: {
     const info = await tx.sendMail({
       from: fromAddress(opts.fromName, opts.fromEmail),
       to: opts.to,
+      cc: opts.cc,
       subject: opts.subject,
       text: opts.body,
       // Simple text→HTML: preserve line breaks
@@ -64,14 +66,16 @@ function htmlify(body: string): string {
 }
 
 // Send as a SPECIFIC user via their own Gmail app password (per-user sending). Builds a
-// throwaway transport for that identity — correct even if the password changed.
+// throwaway transport for that identity — correct even if the password changed. cc is used
+// to loop in whoever actually initiated the send when it's going out through a shared inbox,
+// so they see replies and can reply themselves.
 export async function sendEmailAs(opts: {
-  user: string; pass: string; fromName?: string; to: string; subject: string; body: string;
+  user: string; pass: string; fromName?: string; to: string; subject: string; body: string; cc?: string;
 }): Promise<SendResult> {
   try {
     const tx = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user: opts.user, pass: opts.pass } });
     const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
-    const info = await tx.sendMail({ from, to: opts.to, subject: opts.subject, text: opts.body, html: htmlify(opts.body) });
+    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, text: opts.body, html: htmlify(opts.body) });
     tx.close();
     return { ok: true, messageId: info.messageId };
   } catch (e: any) {

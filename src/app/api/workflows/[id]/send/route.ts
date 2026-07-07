@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@auth";
-import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds } from "@/lib/db/queries";
+import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds, getEnabledSharedSenders } from "@/lib/db/queries";
 import { computeSmartSchedule, type ScheduleRecipient } from "@/lib/email/schedule";
-import { findSharedSender } from "@/lib/email/sharedSenders";
 import type { EmailSendConfig } from "@/lib/types";
 
 export const maxDuration = 300;
 
 // POST — schedule all ready emails for included prospects.
 // Body: { sender_email?: string } — omit (or your own address) to send from your own Gmail
-// as before; pass a configured shared inbox's address (see sharedSenders.ts) to send from
-// that identity instead. Either way, sent_by_email always records who actually clicked
-// Send, so attribution isn't lost when sending through a shared inbox.
+// as before; pass a currently-enabled shared inbox's address (managed in Admin) to send
+// from that identity instead. Either way, sent_by_email always records who actually
+// clicked Send, so attribution isn't lost when sending through a shared inbox.
 // Requires the CHOSEN identity to have a Gmail app password set (else needsAppPassword).
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -21,8 +20,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!sentByEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
-    const shared = typeof body.sender_email === "string" ? findSharedSender(body.sender_email) : undefined;
-    const senderEmail = shared ? shared.email : sentByEmail;
+    let senderEmail = sentByEmail;
+    let shared: { email: string; label: string } | undefined;
+    if (typeof body.sender_email === "string" && body.sender_email && body.sender_email !== sentByEmail) {
+      shared = (await getEnabledSharedSenders()).find((s) => s.email === body.sender_email);
+      if (!shared) {
+        return NextResponse.json({ error: "That shared inbox isn't available right now — it may have been turned off in Admin." }, { status: 400 });
+      }
+      senderEmail = shared.email;
+    }
 
     const userCfg = await getUserEmailConfig(senderEmail);
     if (!userCfg.hasPassword) {

@@ -62,6 +62,10 @@ export async function POST(req: NextRequest) {
       }
 
       const sender = (email as any).sender_email as string | undefined;
+      const sentBy = (email as any).sent_by_email as string | undefined;
+      // CC whoever actually clicked Send when it went out through a shared inbox, so they
+      // see replies and can reply themselves.
+      const cc = sentBy && sentBy !== sender ? sentBy : undefined;
       let res;
 
       if (sender) {
@@ -73,10 +77,10 @@ export async function POST(req: NextRequest) {
         }
         // Daily cap is per-sender (keyed by their email).
         if ((await getDailyCount(sender, day)) >= info.cap) { cappedSkipped++; continue; }
-        res = await sendEmailAs({ user: sender, pass: info.pass, fromName: info.fromName, to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "" });
+        res = await sendEmailAs({ user: sender, pass: info.pass, fromName: info.fromName, to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc });
       } else {
         // Legacy path — no per-user sender: fall back to the server SMTP identity.
-        res = await sendEmail({ to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "" });
+        res = await sendEmail({ to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc });
       }
 
       if (res.ok) {

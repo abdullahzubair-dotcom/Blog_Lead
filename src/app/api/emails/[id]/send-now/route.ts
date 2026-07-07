@@ -21,6 +21,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     subject: email.subject ?? "(no subject)",
     body: email.body ?? "",
     sender: (email as any).sender_email ?? null,
+    sentBy: (email as any).sent_by_email ?? null,
   });
 
   if (res.ok) {

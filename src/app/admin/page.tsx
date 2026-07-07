@@ -81,6 +81,67 @@ export default function AdminPage() {
     setClearingTavilyKey(false);
   };
 
+  // Shared sending identities (e.g. Zain) — toggle on/off, change app password, add new
+  interface SharedSender { email: string; label: string; enabled: boolean; hasPassword: boolean }
+  const [sharedSenders, setSharedSenders] = useState<SharedSender[]>([]);
+  const [senderPwInputs, setSenderPwInputs] = useState<Record<string, string>>({});
+  const [savingSenderPw, setSavingSenderPw] = useState<string | null>(null);
+  const [togglingSender, setTogglingSender] = useState<string | null>(null);
+  const [addingSender, setAddingSender] = useState(false);
+  const [newSender, setNewSender] = useState({ email: "", label: "", app_password: "" });
+
+  const loadSharedSenders = async () => {
+    const data = await fetch("/api/admin/shared-senders").then((r) => (r.ok ? r.json() : [])).catch(() => []);
+    setSharedSenders(data);
+  };
+
+  const toggleSender = async (s: SharedSender) => {
+    setTogglingSender(s.email);
+    await fetch(`/api/admin/shared-senders/${encodeURIComponent(s.email)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !s.enabled }),
+    });
+    toast.success(`${s.label} ${!s.enabled ? "enabled" : "disabled"} as a sending identity.`);
+    await loadSharedSenders();
+    setTogglingSender(null);
+  };
+
+  const saveSenderPassword = async (email: string) => {
+    const pw = senderPwInputs[email]?.trim();
+    if (!pw) return;
+    setSavingSenderPw(email);
+    const res = await fetch(`/api/admin/shared-senders/${encodeURIComponent(email)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_password: pw }),
+    });
+    if (res.ok) {
+      toast.success("App password updated.");
+      setSenderPwInputs((prev) => ({ ...prev, [email]: "" }));
+      await loadSharedSenders();
+    } else {
+      toast.error("Failed to update password.");
+    }
+    setSavingSenderPw(null);
+  };
+
+  const addSharedSender = async () => {
+    if (!newSender.email.trim() || !newSender.label.trim() || !newSender.app_password.trim()) return;
+    setAddingSender(true);
+    const res = await fetch("/api/admin/shared-senders", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newSender),
+    });
+    if (res.ok) {
+      toast.success(`${newSender.label} added as a shared sender.`);
+      setNewSender({ email: "", label: "", app_password: "" });
+      await loadSharedSenders();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      toast.error(d.error ?? "Failed to add.");
+    }
+    setAddingSender(false);
+  };
+
   const reload = async () => {
     const [s, h, sup, r, ls] = await Promise.all([
       fetch("/api/seeds").then((r) => r.json()),
@@ -110,6 +171,7 @@ export default function AdminPage() {
   useEffect(() => {
     reload().catch(() => toast.error("Failed to load admin data"));
     loadTavilyStatus();
+    loadSharedSenders();
   }, []);
 
   // ── Direction: Our Brand ───────────────────────────────────────────────────
@@ -247,13 +309,14 @@ export default function AdminPage() {
       </div>
 
       <Tabs defaultValue="direction" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-7">
+        <TabsList className="grid w-full grid-cols-8">
           <TabsTrigger value="direction">Direction</TabsTrigger>
           <TabsTrigger value="seeds">All Seeds</TabsTrigger>
           <TabsTrigger value="harvesters">Harvesters</TabsTrigger>
           <TabsTrigger value="suppression">Suppression</TabsTrigger>
           <TabsTrigger value="pipeline">Logs</TabsTrigger>
           <TabsTrigger value="apikeys">API Keys</TabsTrigger>
+          <TabsTrigger value="senders">Shared Senders</TabsTrigger>
           <TabsTrigger value="learning" className="flex items-center gap-1.5">
             <Brain className="h-3.5 w-3.5" />
             Learning
@@ -630,6 +693,67 @@ export default function AdminPage() {
                 <a href="https://tavily.com" target="_blank" rel="noreferrer" className="text-violet-400 hover:underline">tavily.com</a>.
                 Saving resets the usage counter shown here and in the navbar, since a new key starts its own quota.
               </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── SHARED SENDERS ── */}
+        <TabsContent value="senders" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Shared Sending Identities</CardTitle>
+              <CardDescription>
+                Team inboxes anyone can send through from the emails page's "Send from" picker — toggle on/off, or update
+                the Gmail app password when it changes. Whoever actually clicks Send is still CC'd and shown in the
+                Sending page, so nothing gets lost.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {sharedSenders.length === 0 ? (
+                <p className="text-muted-foreground text-sm text-center py-4">No shared senders configured yet</p>
+              ) : sharedSenders.map((s) => (
+                <div key={s.email} className="rounded-lg bg-muted/50 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{s.label}</p>
+                      <p className="text-xs text-muted-foreground truncate">{s.email}</p>
+                    </div>
+                    {!s.hasPassword && <Badge variant="outline" className="text-amber-500 border-amber-500/40 text-xs shrink-0">no password set</Badge>}
+                    <Switch checked={s.enabled} disabled={togglingSender === s.email} onCheckedChange={() => toggleSender(s)} />
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      type="password"
+                      placeholder="New app password…"
+                      value={senderPwInputs[s.email] ?? ""}
+                      onChange={(e) => setSenderPwInputs((prev) => ({ ...prev, [s.email]: e.target.value }))}
+                      onKeyDown={(ev) => { if (ev.key === "Enter") saveSenderPassword(s.email); }}
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      size="sm" variant="outline" className="h-8 text-xs shrink-0"
+                      disabled={!senderPwInputs[s.email]?.trim() || savingSenderPw === s.email}
+                      onClick={() => saveSenderPassword(s.email)}
+                    >
+                      {savingSenderPw === s.email && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                      Update
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Add a shared sender</p>
+                <div className="flex flex-wrap gap-2">
+                  <Input placeholder="Display name (e.g. Zain)" value={newSender.label} onChange={(e) => setNewSender((f) => ({ ...f, label: e.target.value }))} className="flex-1 min-w-[140px]" />
+                  <Input placeholder="Gmail address" value={newSender.email} onChange={(e) => setNewSender((f) => ({ ...f, email: e.target.value }))} className="flex-1 min-w-[180px]" />
+                  <Input type="password" placeholder="App password" value={newSender.app_password} onChange={(e) => setNewSender((f) => ({ ...f, app_password: e.target.value }))} className="flex-1 min-w-[140px]" />
+                  <Button onClick={addSharedSender} disabled={addingSender || !newSender.email.trim() || !newSender.label.trim() || !newSender.app_password.trim()} className="bg-violet-600 hover:bg-violet-700 text-white shrink-0">
+                    {addingSender && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                    Add
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

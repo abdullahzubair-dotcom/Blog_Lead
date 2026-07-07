@@ -1539,6 +1539,7 @@ export async function getUserEmailConfig(userEmail: string): Promise<import("@/l
 export async function upsertUserEmailConfig(userEmail: string, data: {
   app_password_enc?: string; from_name?: string; timezone?: string;
   send_hour_start?: number; send_hour_end?: number; gap_minutes?: number; daily_cap?: number;
+  shared_sender_label?: string | null; shared_sender_enabled?: boolean;
 }): Promise<void> {
   const { error } = await supabaseAdmin
     .from("user_email_config")
@@ -1550,6 +1551,41 @@ export async function upsertUserEmailConfig(userEmail: string, data: {
 export async function getUserAppPasswordEnc(userEmail: string): Promise<string | null> {
   const { data } = await supabaseAdmin.from("user_email_config").select("app_password_enc").eq("user_email", userEmail).maybeSingle();
   return (data?.app_password_enc as string | undefined) ?? null;
+}
+
+// ─── Shared sending identities (e.g. Zain) — admin-managed, DB-driven ──────────────
+
+export interface SharedSenderRow { email: string; label: string; enabled: boolean; hasPassword: boolean }
+
+// Every configured shared sender, enabled or not — for the Admin management list.
+export async function getSharedSenders(): Promise<SharedSenderRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from("user_email_config")
+    .select("user_email, shared_sender_label, shared_sender_enabled, app_password_enc")
+    .not("shared_sender_label", "is", null);
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    email: r.user_email, label: r.shared_sender_label, enabled: r.shared_sender_enabled, hasPassword: !!r.app_password_enc,
+  }));
+}
+
+// Only the ones currently toggled on — for the "Send from" picker and for validating a
+// chosen sender_email is actually allowed right now.
+export async function getEnabledSharedSenders(): Promise<{ email: string; label: string }[]> {
+  const { data, error } = await supabaseAdmin
+    .from("user_email_config")
+    .select("user_email, shared_sender_label")
+    .not("shared_sender_label", "is", null)
+    .eq("shared_sender_enabled", true);
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({ email: r.user_email, label: r.shared_sender_label }));
+}
+
+// For display purposes (e.g. labeling past sends) — returns the label even if since
+// disabled, so history still reads "from Zain" after a toggle-off.
+export async function getSharedSenderLabel(email: string): Promise<string | null> {
+  const { data } = await supabaseAdmin.from("user_email_config").select("shared_sender_label").eq("user_email", email).maybeSingle();
+  return (data as any)?.shared_sender_label ?? null;
 }
 
 // ─── Email send config & scheduling ─────────────────────────────────────────────
