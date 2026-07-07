@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 
-interface Progress { runId: string; pagesChecked: number; pagesTotal: number; linksChecked: number; broken: number; unreachable: number }
+interface Progress { runId: string; pagesChecked: number; pagesTotal: number; linksChecked: number; broken: number; unreachable: number; log: string[] }
 interface Run {
   id: string; started_at: string; finished_at: string | null; status: string;
   pages_total: number; pages_checked: number; links_checked: number; broken_found: number; unreachable: number;
@@ -164,6 +164,16 @@ export default function LinkAuditPage() {
           <p className="text-xs text-muted-foreground">
             {progress.linksChecked.toLocaleString()} unique links checked · <span className="text-red-400 font-medium">{progress.broken} broken</span> · {progress.unreachable} unreachable (not counted as broken) · keeps running if you close this tab
           </p>
+          {/* Verbose per-page log — newest at the bottom */}
+          {(progress.log?.length ?? 0) > 0 && (
+            <div className="mt-2 max-h-64 overflow-y-auto rounded-md bg-black/40 border border-border font-mono text-[11px] leading-relaxed p-3 space-y-0.5 flex flex-col-reverse">
+              <div>
+                {progress.log.map((line, i) => (
+                  <p key={i} className={line.includes("BROKEN") ? "text-red-400" : line.includes("failed") ? "text-amber-400" : "text-muted-foreground"}>{line}</p>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

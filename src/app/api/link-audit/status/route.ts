@@ -21,6 +21,7 @@ export async function GET() {
       linksChecked: state.linksChecked,
       broken: state.broken,
       unreachable: state.unreachable,
+      log: state.log ?? [],
     } : null,
     runs: runs ?? [],
   });

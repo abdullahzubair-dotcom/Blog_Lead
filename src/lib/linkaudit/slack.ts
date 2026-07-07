@@ -73,22 +73,61 @@ function isProseContext(ctx: string): boolean {
   return capitalized / words.length < 0.5;
 }
 
+// Ask Haiku to pinpoint WHERE on the page a link sits, from its anchor + surrounding text —
+// "the 'View All' button in the ImagineArt for Teams section" beats a raw text quote,
+// especially when the same anchor text ("View All") appears many times on one page.
+async function aiLocateFinding(f: Finding): Promise<string | null> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key || key.length < 20 || !f.context_text) return null;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        messages: [{
+          role: "user",
+          content: `A broken link was found on the page ${new URL(f.page_url).pathname}.
+Link text: "${f.anchor_text ?? ""}"
+Broken URL: ${f.link_url}
+Text surrounding the link on the page: "${f.context_text}"
+
+In ONE short phrase (max 16 words), tell a writer exactly where on the page this link sits, using only details visible in the surrounding text — e.g. "the 'View All' button next to the ImagineArt for Teams category heading" or "the Career link in the footer, after Help Center". Reply with ONLY the phrase. No placeholders, no quotes around the whole phrase.`,
+        }],
+        max_tokens: 60,
+        temperature: 0,
+      }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const out = (data.choices?.[0]?.message?.content ?? "").trim().replace(/^["']|["']$/g, "");
+    return out && out.length < 160 && !/\[[^\]]+\]/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 // Group findings by broken link so a site-wide dead nav link is one entry, not hundreds.
-function renderFindings(findings: Finding[], slackMap: Record<string, string>): string {
+const MAX_AI_LOCATIONS = 12; // AI-locate the first N groups; the rest fall back to text context
+async function renderFindings(findings: Finding[], slackMap: Record<string, string>): Promise<string> {
   const byLink = new Map<string, Finding[]>();
   for (const f of findings) {
     (byLink.get(f.link_url) ?? byLink.set(f.link_url, []).get(f.link_url)!).push(f);
   }
   const groups = [...byLink.entries()].slice(0, MAX_FINDINGS_IN_MESSAGE);
   const lines: string[] = [];
+  let aiCalls = 0;
   for (const [link, fs] of groups) {
     const first = fs[0];
     const label = REASON_LABEL[first.reason] ?? first.reason;
     lines.push(`• *Broken:* ${link}  _(${label})_`);
+    const location = aiCalls < MAX_AI_LOCATIONS ? (aiCalls++, await aiLocateFinding(first)) : null;
+    if (location) lines.push(`   📍 ${location}`);
     for (const f of fs.slice(0, 3)) {
       const ctx = (f.context_text ?? "").slice(0, 160);
       lines.push(`   ↳ on <${f.page_url}|${new URL(f.page_url).pathname}> — by ${authorTag(f.page_author, slackMap)}${f.anchor_text ? ` — link text: "${f.anchor_text.slice(0, 60)}"` : ""}`);
-      if (ctx && isProseContext(ctx)) lines.push(`      _"…${ctx}…"_`);
+      if (!location && ctx && isProseContext(ctx)) lines.push(`      _"…${ctx}…"_`);
     }
     if (fs.length > 3) lines.push(`   ↳ …and on ${fs.length - 3} more page${fs.length - 3 === 1 ? "" : "s"}`);
   }
@@ -161,7 +200,7 @@ export async function postAuditDigest(runId: string): Promise<{ ok: boolean; err
 
   let text = `:link: *imagine.art link audit*\n${intro}`;
   if (fs.length > 0) {
-    text += `\n\n${renderFindings(fs, slackMap)}`;
+    text += `\n\n${await renderFindings(fs, slackMap)}`;
   } else {
     text += `\n\nAll clean today — no broken links found. :white_check_mark:`;
   }

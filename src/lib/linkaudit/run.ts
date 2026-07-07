@@ -35,8 +35,16 @@ export interface AuditState {
   linksChecked: number;
   broken: number;
   unreachable: number;
+  log: string[]; // rolling verbose progress lines for the /link-audit page
   startedAt: number;
   updatedAt: number;
+}
+
+const MAX_LOG_LINES = 120;
+function pushLog(state: AuditState, line: string) {
+  state.log ??= []; // states saved before this field existed
+  state.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+  if (state.log.length > MAX_LOG_LINES) state.log.splice(0, state.log.length - MAX_LOG_LINES);
 }
 
 // verdict: ok | 404 | 410 | soft | home | unreach ; count = pages seen on (for the cap)
@@ -310,11 +318,13 @@ export async function startAudit(): Promise<{ runId: string; pagesTotal: number 
     .single();
   if (error) throw error;
   await clearAuditState();
-  await saveState({
+  const state: AuditState = {
     runId: run.id, pages, index: 0, authorMap: {},
-    linksChecked: 0, broken: 0, unreachable: 0,
+    linksChecked: 0, broken: 0, unreachable: 0, log: [],
     startedAt: Date.now(), updatedAt: Date.now(),
-  });
+  };
+  pushLog(state, `Sitemap fetched — ${pages.length} pages queued for crawling`);
+  await saveState(state);
   return { runId: run.id, pagesTotal: pages.length };
 }
 
@@ -379,6 +389,13 @@ export async function processAuditChunk(): Promise<void> {
           { onConflict: "run_id,page_url,link_url", ignoreDuplicates: true },
         );
       }
+
+      const path = (() => { try { return new URL(pageUrl).pathname || "/"; } catch { return pageUrl; } })();
+      const authorNote = ownAuthor ? ` · author: ${ownAuthor}` : "";
+      const brokenNote = findings.length > 0 ? ` · ⚠ ${findings.length} BROKEN: ${findings.map((f) => f.link.url).join(", ").slice(0, 160)}` : "";
+      pushLog(state, `[${state.index + 1}/${state.pages.length}] ${path} — ${links.length} links${authorNote}${brokenNote}`);
+    } else {
+      pushLog(state, `[${state.index + 1}/${state.pages.length}] ${pageUrl} — page fetch failed (${"error" in res ? res.error : `HTTP ${res.status}`})`);
     }
 
     state.index++;
@@ -399,9 +416,13 @@ export async function processAuditChunk(): Promise<void> {
 
   if (state.index < state.pages.length) {
     // Budget hit with pages remaining → continue in a fresh invocation.
+    pushLog(state, `Time budget reached — continuing in a fresh run (${state.pages.length - state.index} pages left)`);
+    await saveState(state);
     await qstashPublish("/api/link-audit/run", { continue: true, auto: true });
     return;
   }
+  pushLog(state, `Crawl complete — resolving authors and posting the Slack digest…`);
+  await saveState(state);
 
   // ── Finalize ──────────────────────────────────────────────────────────────
   // Resolve authors onto findings now that the card map is complete.
