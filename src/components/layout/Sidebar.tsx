@@ -17,6 +17,7 @@ import {
   AtSign,
   Loader2,
   Bell,
+  Unlink,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,7 @@ const NAV = [
   { name: "Emails", href: "/emails", icon: Mail },
   { name: "Sending", href: "/sending", icon: Send },
   { name: "Notifications", href: "/notifications", icon: Bell },
+  { name: "Link Audit", href: "/link-audit", icon: Unlink },
   { name: "Admin", href: "/admin", icon: Rocket },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
