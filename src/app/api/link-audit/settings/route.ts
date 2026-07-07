@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasWebhook, setWebhook, getSlackMap, setSlackMap, hasBotToken, setBotToken, fetchSlackUsers } from "@/lib/linkaudit/slack";
+import { hasWebhook, setWebhook, getSlackMap, setSlackMap, hasBotToken, setBotToken, clearBotToken, fetchSlackUsers } from "@/lib/linkaudit/slack";
 
 // GET — settings state for the /link-audit page. Secrets (webhook, bot token) are never
 // returned, only whether they're configured.
@@ -26,10 +26,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "That doesn't look like a Slack bot token (should start with xoxb-)" }, { status: 400 });
       }
       await setBotToken(token);
-      // Validate immediately: can we actually list users with it?
+      // Validate immediately: can we actually list users with it? A bad token is rolled
+      // back so the system keeps running token-less (plain names) instead of half-broken.
       const users = await fetchSlackUsers();
       if (users.length === 0) {
-        return NextResponse.json({ error: "Token saved, but listing users failed — check it has the users:read scope." }, { status: 400 });
+        await clearBotToken();
+        return NextResponse.json({ error: "That token couldn't list workspace users (needs the users:read scope) — not saved, auto-tagging stays off." }, { status: 400 });
       }
       if (body.slackMap && typeof body.slackMap === "object") await setSlackMap(body.slackMap);
       return NextResponse.json({ ok: true, directoryUsers: users.length });

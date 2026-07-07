@@ -58,6 +58,15 @@ export async function setBotToken(token: string): Promise<void> {
   await r.del(USERS_CACHE_KEY).catch(() => {}); // new token → refetch directory
 }
 
+// Roll back a token that failed validation — never leave a broken token wedged in as
+// "configured" (everything must keep working token-less until a good one arrives).
+export async function clearBotToken(): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  await r.del(BOT_TOKEN_KEY).catch(() => {});
+  await r.del(USERS_CACHE_KEY).catch(() => {});
+}
+
 export async function hasBotToken(): Promise<boolean> {
   const r = redis();
   if (!r) return false;
