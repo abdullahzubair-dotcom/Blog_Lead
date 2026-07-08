@@ -263,6 +263,7 @@ async function renderFindings(findings: Finding[], resolved: Record<string, stri
       lines.push(`   ↳ on <${f.page_url}|${new URL(f.page_url).pathname}> — by ${authorTag(f.page_author, resolved)}${f.anchor_text ? ` — link text: "${f.anchor_text.slice(0, 60)}"` : ""}`);
       if (!location && ctx && isProseContext(ctx)) lines.push(`      _"…${ctx}…"_`);
     }
+    lines.push("--------------------"); // divider between entries for readability
   };
 
   if (authored.length > 0) {
