@@ -94,15 +94,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Auto reply detection — read each sender's mailbox (rate-limited per account) and mark
-    // any outstanding sent emails that got a reply. Read-only; failures never block sending.
+    // Auto reply detection FIRST — read each sender's mailbox (rate-limited per account)
+    // and mark replies, so we never follow up with someone who just replied. Read-only;
+    // failures never block sending.
     let replies = { accountsChecked: 0, repliesFound: 0, errors: [] as string[] };
     try {
       const { runReplyDetection } = await import("@/lib/email/imap");
       replies = await runReplyDetection();
     } catch (e: any) { replies.errors.push(e?.message ?? "reply detection error"); }
 
-    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, results });
+    // Auto follow-ups — day-2, no-reply initials get a threaded nudge (kill-switch respected).
+    let followups = { generated: 0, sent: 0, skippedDisabled: false, errors: [] as string[] };
+    try {
+      const { runFollowups } = await import("@/lib/email/followup");
+      followups = await runFollowups();
+    } catch (e: any) { followups.errors.push(e?.message ?? "followup error"); }
+
+    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, followups, results });
   } finally {
     await releaseLock(LOCK_KEY, lockToken);
   }

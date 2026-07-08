@@ -3,20 +3,28 @@ import { getSendingStatus, getSharedSenders } from "@/lib/db/queries";
 import { inferTimezone, localTimeLabel } from "@/lib/email/timezones";
 import { isGuessSource } from "@/lib/enrich/personFilter";
 
-// Sending status for the progress page. Enriches upcoming/recent emails with the
-// recipient's inferred timezone + a local-time label so the UI can show "9:14 AM PKT".
+// Sending status for the progress page. Counts are all-time; queued + sent/failed lists
+// are paginated (?recent_offset / ?upcoming_offset) so the UI can load more back through
+// the full history. ROI rates are computed from the all-time counts.
 export async function GET(req: NextRequest) {
-  const workflowId = req.nextUrl.searchParams.get("workflow_id") ?? undefined;
-  const [{ counts, upcoming, recent }, sharedSenders] = await Promise.all([
-    getSendingStatus(workflowId),
-    getSharedSenders(), // labels shown even if since disabled — history should still read "from Zain"
+  const sp = req.nextUrl.searchParams;
+  const workflowId = sp.get("workflow_id") ?? undefined;
+  const recentOffset = parseInt(sp.get("recent_offset") ?? "0", 10) || 0;
+  const upcomingOffset = parseInt(sp.get("upcoming_offset") ?? "0", 10) || 0;
+  // Grow-a-window pagination: the page passes the total count it wants shown so a 5s poll
+  // always returns the whole shown set (offset stays 0). Capped so a poll can't get huge.
+  const recentLimit = Math.min(500, parseInt(sp.get("recent_limit") ?? "40", 10) || 40);
+  const upcomingLimit = Math.min(500, parseInt(sp.get("upcoming_limit") ?? "60", 10) || 60);
+
+  const [{ counts, upcoming, upcomingTotal, recent, recentTotal }, sharedSenders] = await Promise.all([
+    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit }),
+    getSharedSenders(),
   ]);
   const sharedLabelByEmail = new Map(sharedSenders.map((s) => [s.email, s.label]));
 
   const enrich = (e: any) => {
     const host = e.author?.domain?.host as string | undefined;
     const country = e.author?.domain?.country as string | undefined;
-    // Prefer the cached per-author timezone (what scheduling actually used).
     const tz = e.author?.timezone || inferTimezone(host, country, "America/New_York");
     const when = e.scheduled_at ?? e.sent_at;
     const mailto = (e.author?.contacts ?? []).find((c: any) => c.type === "mailto");
@@ -24,32 +32,38 @@ export async function GET(req: NextRequest) {
       id: e.id,
       author_id: e.author_id,
       sender_email: e.sender_email ?? null,
-      sender_label: e.sender_email ? sharedLabelByEmail.get(e.sender_email) ?? null : null, // e.g. "Zain" when sent through a shared inbox
-      sent_by_email: e.sent_by_email ?? null, // who actually clicked Send, if different from sender_email
+      sender_label: e.sender_email ? sharedLabelByEmail.get(e.sender_email) ?? null : null,
+      sent_by_email: e.sent_by_email ?? null,
       author_name: e.author?.full_name ?? "Unknown",
       publication: e.author?.domain?.name ?? host ?? "",
       subject: e.subject ?? "",
       status: e.status,
+      kind: e.kind ?? "initial",
+      parent_id: e.parent_id ?? null,
       scheduled_at: e.scheduled_at,
       sent_at: e.sent_at,
       error: e.error,
       replied_at: e.replied_at ?? null,
+      success_at: e.success_at ?? null,
+      success_link: e.success_link ?? null,
+      success_notes: e.success_notes ?? null,
       tz,
       local_label: when ? localTimeLabel(when, tz) : null,
       guess: isGuessSource(mailto?.source),
     };
   };
 
-  // Reply rate is of SUCCESSFULLY SENT emails only — a failed send can't have gotten a
-  // reply, so it's excluded from the denominator even if someone manually checked it.
-  const repliedAmongSent = recent.filter((e: any) => e.status === "sent" && e.replied_at).length;
-  const replyRate = counts.sent > 0 ? Math.round((repliedAmongSent / counts.sent) * 1000) / 10 : 0;
+  const sent = counts.sent ?? 0;
+  const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
+  const roi = {
+    replyRate: pct(counts.replied ?? 0, sent),          // replies ÷ sent
+    winRate: pct(counts.success ?? 0, sent),            // coverage secured ÷ sent
+    replyToWin: pct(counts.success ?? 0, counts.replied ?? 0), // conversion of replies → wins
+  };
 
   return NextResponse.json({
-    counts,
-    replyRate,
-    upcoming: upcoming.map(enrich),
-    recent: recent.map(enrich),
-    total: Object.values(counts).reduce((a, b) => a + b, 0),
+    counts, roi,
+    upcoming: upcoming.map(enrich), upcomingTotal,
+    recent: recent.map(enrich), recentTotal,
   });
 }

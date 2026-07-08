@@ -1346,6 +1346,77 @@ export async function markRepliesChecked(ids: string[]): Promise<void> {
   await supabaseAdmin.from("outreach_emails").update({ reply_checked_at: new Date().toISOString() }).in("id", ids);
 }
 
+// ─── Auto follow-ups ────────────────────────────────────────────────────────────
+
+// Initial sends older than `days` with no reply, no success, not skipped, and no follow-up
+// yet — the candidates for an automatic threaded follow-up.
+export async function getEmailsNeedingFollowup(days = 2, limit = 25): Promise<Array<{
+  id: string; workflow_id: string; author_id: string; template_id: string | null;
+  subject: string; sender_email: string | null; sent_by_email: string | null; message_id: string | null;
+  recipient: string; author_name: string; publication: string; guidance: string | null;
+}>> {
+  const before = new Date(Date.now() - days * 86400_000).toISOString();
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("id, workflow_id, author_id, template_id, subject, sender_email, sent_by_email, message_id, author:authors(full_name, contacts(type, value), domain:domains(name, host))")
+    .eq("status", "sent").eq("kind", "initial")
+    .is("replied_at", null).is("success_at", null).eq("followup_skipped", false)
+    .lte("sent_at", before)
+    .order("sent_at", { ascending: true })
+    .limit(limit * 3); // over-fetch; we filter out ones that already have a follow-up child
+  const rows = data ?? [];
+  if (rows.length === 0) return [];
+
+  // Exclude any that already have a follow-up child.
+  const ids = rows.map((r) => r.id);
+  const { data: kids } = await supabaseAdmin.from("outreach_emails").select("parent_id").eq("kind", "followup").in("parent_id", ids);
+  const hasChild = new Set((kids ?? []).map((k: any) => k.parent_id));
+
+  // Load each involved template's guidance once.
+  const templateIds = [...new Set(rows.map((r) => (r as any).template_id).filter(Boolean))] as string[];
+  const guidanceById = new Map<string, string | null>();
+  if (templateIds.length > 0) {
+    const { data: tpls } = await supabaseAdmin.from("email_templates").select("id, guidance").in("id", templateIds);
+    for (const t of tpls ?? []) guidanceById.set(t.id, (t as any).guidance ?? null);
+  }
+
+  const out: any[] = [];
+  for (const r of rows) {
+    if (hasChild.has(r.id)) continue;
+    const a: any = (r as any).author ?? {};
+    const mailto = (a.contacts ?? []).find((c: any) => c.type === "mailto");
+    const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
+    if (!recipient) continue;
+    out.push({
+      id: r.id, workflow_id: r.workflow_id, author_id: r.author_id, template_id: (r as any).template_id ?? null,
+      subject: r.subject ?? "", sender_email: (r as any).sender_email ?? null, sent_by_email: (r as any).sent_by_email ?? null,
+      message_id: (r as any).message_id ?? null, recipient,
+      author_name: a.full_name ?? "there", publication: a.domain?.name ?? a.domain?.host ?? "your work",
+      guidance: (r as any).template_id ? guidanceById.get((r as any).template_id) ?? null : null,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+// Insert the follow-up as its own row (kind='followup') linked to its parent, then it's
+// delivered + stamped sent by the caller.
+export async function createFollowupRow(data: {
+  workflow_id: string; author_id: string; parent_id: string; subject: string; body: string;
+  sender_email: string | null; sent_by_email: string | null;
+}): Promise<{ id: string }> {
+  const { data: row, error } = await supabaseAdmin
+    .from("outreach_emails")
+    .insert({
+      workflow_id: data.workflow_id, author_id: data.author_id, parent_id: data.parent_id,
+      kind: "followup", subject: data.subject, body: data.body, status: "ready",
+      sender_email: data.sender_email, sent_by_email: data.sent_by_email,
+    })
+    .select("id").single();
+  if (error) throw error;
+  return row;
+}
+
 // Authors that lack an email (no mailto contact), optionally scoped to one campaign.
 // Returns id + name + publication domain host so the finder can run the waterfall.
 export async function getAuthorsNeedingEmail(campaignId?: string, onlyNew = false): Promise<Array<{ id: string; name: string; host: string; publication: string }>> {
@@ -1708,42 +1779,52 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
   return moved;
 }
 
-// Sending status for the progress page — counts by status + the next upcoming and
-// most-recent emails, with author/domain so the UI can show recipient + local time.
-export async function getSendingStatus(workflowId?: string): Promise<{
-  counts: Record<string, number>;
-  upcoming: any[];
-  recent: any[];
-}> {
-  const base = () => {
-    let q = supabaseAdmin.from("outreach_emails").select(
-      "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, scheduled_at, sent_at, error, replied_at, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))"
-    );
-    if (workflowId) q = q.eq("workflow_id", workflowId) as any;
-    return q;
-  };
+// Sending status for the progress page. Counts are ALL-TIME (via exact count queries, not
+// a capped page), so the top stats reflect the entirety of sending history. The queued and
+// sent/failed lists are paginated so the UI can "load more" back through everything.
+const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
 
-  // Sent/failed history only counts emails that actually have a sender_email — i.e. ones
-  // sent under per-user sending. Older rows from before that existed have no sender
-  // identity and would skew reply-rate/sent-failed stats, so they're excluded here.
-  const [{ data: all }, { data: upcoming }, { data: recent }] = await Promise.all([
-    base(),
-    base().eq("status", "scheduled").order("scheduled_at", { ascending: true }).limit(50),
-    base().in("status", ["sent", "failed"]).not("sender_email", "is", null).order("sent_at", { ascending: false }).limit(200),
+export async function getSendingStatus(opts: {
+  workflowId?: string; upcomingOffset?: number; upcomingLimit?: number; recentOffset?: number; recentLimit?: number;
+} = {}): Promise<{
+  counts: Record<string, number>;
+  upcoming: any[]; upcomingTotal: number;
+  recent: any[]; recentTotal: number;
+}> {
+  const { workflowId } = opts;
+  const upcomingOffset = opts.upcomingOffset ?? 0;
+  const upcomingLimit = opts.upcomingLimit ?? 50;
+  const recentOffset = opts.recentOffset ?? 0;
+  const recentLimit = opts.recentLimit ?? 40;
+
+  const scoped = (q: any) => (workflowId ? q.eq("workflow_id", workflowId) : q);
+  const countOf = (build: (q: any) => any) =>
+    build(scoped(supabaseAdmin.from("outreach_emails").select("id", { count: "exact", head: true })))
+      .then(({ count }: any) => count ?? 0);
+
+  const [
+    cScheduled, cReadyDraft, cSent, cFailed, cReplied, cSuccess, upcomingTotal, recentTotal,
+    { data: upcoming }, { data: recent },
+  ] = await Promise.all([
+    countOf((q) => q.eq("status", "scheduled")),
+    countOf((q) => q.in("status", ["ready", "draft"])),
+    countOf((q) => q.eq("status", "sent")),
+    countOf((q) => q.eq("status", "failed")),
+    countOf((q) => q.not("replied_at", "is", null)),
+    countOf((q) => q.not("success_at", "is", null)),
+    countOf((q) => q.eq("status", "scheduled")),
+    countOf((q) => q.in("status", ["sent", "failed"])),
+    scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
+      .eq("status", "scheduled").order("scheduled_at", { ascending: true }).range(upcomingOffset, upcomingOffset + upcomingLimit - 1),
+    scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
+      .in("status", ["sent", "failed"]).order("sent_at", { ascending: false, nullsFirst: false }).range(recentOffset, recentOffset + recentLimit - 1),
   ]);
 
-  const counts: Record<string, number> = { draft: 0, ready: 0, scheduled: 0, sent: 0, failed: 0, replied: 0 };
-  for (const e of all ?? []) {
-    if ((e as any).status === "draft" || (e as any).status === "ready" || (e as any).status === "scheduled") {
-      counts[(e as any).status] = (counts[(e as any).status] ?? 0) + 1;
-    }
-  }
-  for (const e of recent ?? []) {
-    counts[(e as any).status] = (counts[(e as any).status] ?? 0) + 1;
-    if ((e as any).replied_at) counts.replied++;
-  }
-
-  return { counts, upcoming: upcoming ?? [], recent: (recent ?? []).slice(0, 30) };
+  const counts: Record<string, number> = {
+    scheduled: cScheduled, ready: cReadyDraft, draft: 0,
+    sent: cSent, failed: cFailed, replied: cReplied, success: cSuccess,
+  };
+  return { counts, upcoming: upcoming ?? [], upcomingTotal, recent: recent ?? [], recentTotal };
 }
 
 // Emails that are due to send now (scheduled and their time has passed).
