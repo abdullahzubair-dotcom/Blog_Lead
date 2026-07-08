@@ -1868,13 +1868,15 @@ export async function getSendingStatus(opts: {
     countOf((q) => q.not("replied_at", "is", null).eq("kind", "initial")),
     countOf((q) => q.not("success_at", "is", null)),
     countOf((q) => q.eq("status", "scheduled").eq("kind", "initial")),
-    countOf((q) => q.in("status", ["sent", "failed"]).eq("kind", "initial")),
+    // Sent & failed is the chronological record of everything that actually went out —
+    // initials AND sent/failed follow-ups (pending follow-ups stay only in the Follow-ups tab).
+    countOf((q) => q.in("status", ["sent", "failed"])),
     countOf((q) => q.eq("kind", "followup")),
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
       .eq("status", "scheduled").eq("kind", "initial")
       .order("scheduled_at", { ascending: true }).range(upcomingOffset, upcomingOffset + upcomingLimit - 1),
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
-      .in("status", ["sent", "failed"]).eq("kind", "initial")
+      .in("status", ["sent", "failed"])
       .order("sent_at", { ascending: false, nullsFirst: false }).range(recentOffset, recentOffset + recentLimit - 1),
     // Follow-ups of every status (scheduled/sent/failed/draft) — scheduled (sent_at null) first
     // so armed, not-yet-sent ones sort to the top, then sent by recency.

@@ -404,7 +404,9 @@ export default function SendingPage() {
         : <XCircle className="h-4 w-4 text-red-400 shrink-0" />}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate flex items-center gap-1.5">
+          {e.kind === "followup" && <CornerDownRight className="h-3 w-3 text-blue-400 shrink-0" />}
           <button onClick={() => openAuthor(e.author_id)} className="truncate text-left hover:text-violet-400 hover:underline">{e.author_name}</button>
+          {e.kind === "followup" && <span className="text-[9px] uppercase tracking-wide text-blue-400 border border-blue-500/40 rounded px-1 shrink-0">follow-up</span>}
           {e.replied_at && <span className="text-[9px] uppercase tracking-wide text-violet-400 border border-violet-500/40 rounded px-1 shrink-0">replied</span>}
           {e.success_at && <span className="text-[9px] uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded px-1 shrink-0">win</span>}
         </p>
