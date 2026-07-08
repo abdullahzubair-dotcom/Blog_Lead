@@ -15,9 +15,10 @@ export async function GET(req: NextRequest) {
   // always returns the whole shown set (offset stays 0). Capped so a poll can't get huge.
   const recentLimit = Math.min(500, parseInt(sp.get("recent_limit") ?? "40", 10) || 40);
   const upcomingLimit = Math.min(500, parseInt(sp.get("upcoming_limit") ?? "60", 10) || 60);
+  const followupLimit = Math.min(500, parseInt(sp.get("followup_limit") ?? "200", 10) || 200);
 
-  const [{ counts, upcoming, upcomingTotal, recent, recentTotal }, sharedSenders] = await Promise.all([
-    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit }),
+  const [{ counts, upcoming, upcomingTotal, recent, recentTotal, followups, followupsTotal }, sharedSenders] = await Promise.all([
+    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit, followupLimit }),
     getSharedSenders(),
   ]);
   const sharedLabelByEmail = new Map(sharedSenders.map((s) => [s.email, s.label]));
@@ -65,5 +66,6 @@ export async function GET(req: NextRequest) {
     counts, roi,
     upcoming: upcoming.map(enrich), upcomingTotal,
     recent: recent.map(enrich), recentTotal,
+    followups: followups.map(enrich), followupsTotal,
   });
 }

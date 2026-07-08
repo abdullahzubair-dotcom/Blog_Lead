@@ -1,10 +1,11 @@
 // Automatic follow-ups: for an initial send that got no reply after N days, generate a
-// short, personalized nudge and send it AS A REPLY IN THE SAME THREAD (In-Reply-To +
-// "Re:" subject), fully automatically. A global kill-switch and a per-email skip flag are
-// the safety valves, since these send on their own.
+// short, personalized nudge and SCHEDULE it (one per recipient) to send ~a day later AS A
+// REPLY IN THE SAME THREAD. Scheduling (rather than firing instantly) gives every follow-up
+// a visible date and a window to toggle it off individually. The normal send processor then
+// delivers it threaded when due. A global kill-switch and a per-email skip flag are the
+// safety valves.
 import { redis } from "@/lib/redis";
-import { getEmailsNeedingFollowup, createFollowupRow, updateOutreachEmail } from "@/lib/db/queries";
-import { deliverOutreach } from "@/lib/email/deliver";
+import { getEmailsNeedingFollowup, createFollowupRow, updateOutreachEmail, FOLLOWUP_LEAD_MS } from "@/lib/db/queries";
 
 const ENABLED_KEY = "followups:enabled";
 const FOLLOWUP_DAYS = 2;
@@ -59,34 +60,27 @@ Output ONLY the email body.`,
   } catch { return fallback; }
 }
 
-export interface FollowupResult { generated: number; sent: number; skippedDisabled: boolean; errors: string[] }
+export interface FollowupResult { generated: number; scheduled: number; skippedDisabled: boolean; errors: string[] }
 
+// Generate + SCHEDULE follow-ups (does not send). One per recipient (createFollowupRow's
+// parent already guarantees no duplicate). Handles the backlog too: any initial >2 days old
+// with no reply/win and no follow-up yet gets one scheduled ~a day out.
 export async function runFollowups(): Promise<FollowupResult> {
-  const result: FollowupResult = { generated: 0, sent: 0, skippedDisabled: false, errors: [] };
+  const result: FollowupResult = { generated: 0, scheduled: 0, skippedDisabled: false, errors: [] };
   if (!(await followupsEnabled())) { result.skippedDisabled = true; return result; }
 
-  const candidates = await getEmailsNeedingFollowup(FOLLOWUP_DAYS, 25);
+  const candidates = await getEmailsNeedingFollowup(FOLLOWUP_DAYS, 50);
+  const when = new Date(Date.now() + FOLLOWUP_LEAD_MS).toISOString();
   for (const c of candidates) {
     try {
       const body = await generateFollowupBody(c.author_name, c.publication, c.subject, c.guidance);
       const subject = /^re:/i.test(c.subject) ? c.subject : `Re: ${c.subject}`;
-      const child = await createFollowupRow({
+      await createFollowupRow({
         workflow_id: c.workflow_id, author_id: c.author_id, parent_id: c.id, subject, body,
         sender_email: c.sender_email, sent_by_email: c.sent_by_email,
+        status: "scheduled", scheduled_at: when,
       });
-      result.generated++;
-      // Send immediately, threaded into the original (fully-automatic per user's choice).
-      const res = await deliverOutreach({
-        to: c.recipient, subject, body, sender: c.sender_email, sentBy: c.sent_by_email,
-        inReplyTo: c.message_id ?? undefined, references: c.message_id ?? undefined,
-      });
-      if (res.ok) {
-        await updateOutreachEmail(child.id, { status: "sent", sent_at: new Date().toISOString(), message_id: res.messageId ?? undefined });
-        result.sent++;
-      } else {
-        await updateOutreachEmail(child.id, { status: "failed", error: res.error });
-        result.errors.push(`${c.recipient}: ${res.error}`);
-      }
+      result.generated++; result.scheduled++;
     } catch (e: any) {
       result.errors.push(`${c.recipient}: ${e?.message ?? "followup error"}`);
     }

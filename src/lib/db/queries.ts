@@ -1355,6 +1355,11 @@ export async function markRepliesChecked(ids: string[]): Promise<void> {
 
 // ─── Auto follow-ups ────────────────────────────────────────────────────────────
 
+// A newly-scheduled follow-up sends this far in the future, giving a visible date and a
+// window to toggle it off before it goes out. Candidates are already >2 days past their
+// initial send, so this is the review buffer, not the 2-day wait itself.
+export const FOLLOWUP_LEAD_MS = 24 * 60 * 60 * 1000;
+
 // Initial sends older than `days` with no reply, no success, not skipped, and no follow-up
 // yet — the candidates for an automatic threaded follow-up.
 export async function getEmailsNeedingFollowup(days = 2, limit = 25): Promise<Array<{
@@ -1411,17 +1416,47 @@ export async function getEmailsNeedingFollowup(days = 2, limit = 25): Promise<Ar
 export async function createFollowupRow(data: {
   workflow_id: string; author_id: string; parent_id: string; subject: string; body: string;
   sender_email: string | null; sent_by_email: string | null;
+  status?: string; scheduled_at?: string | null;
 }): Promise<{ id: string }> {
   const { data: row, error } = await supabaseAdmin
     .from("outreach_emails")
     .insert({
       workflow_id: data.workflow_id, author_id: data.author_id, parent_id: data.parent_id,
-      kind: "followup", subject: data.subject, body: data.body, status: "ready",
+      kind: "followup", subject: data.subject, body: data.body,
+      status: data.status ?? "ready", scheduled_at: data.scheduled_at ?? null,
       sender_email: data.sender_email, sent_by_email: data.sent_by_email,
     })
     .select("id").single();
   if (error) throw error;
   return row;
+}
+
+// Arm / disarm a single scheduled follow-up. Disarming parks the follow-up (status='draft',
+// no schedule) AND marks its parent followup_skipped so runFollowups never regenerates it.
+// Re-arming reschedules it and clears the parent flag. Only meaningful while it's unsent.
+export async function setFollowupArmed(followupId: string, armed: boolean): Promise<{ ok: boolean; error?: string }> {
+  const { data: fu } = await supabaseAdmin
+    .from("outreach_emails").select("id, parent_id, status, kind").eq("id", followupId).single();
+  if (!fu || (fu as any).kind !== "followup") return { ok: false, error: "not a follow-up" };
+  if ((fu as any).status === "sent") return { ok: false, error: "already sent" };
+  if (armed) {
+    const when = new Date(Date.now() + FOLLOWUP_LEAD_MS).toISOString();
+    await supabaseAdmin.from("outreach_emails").update({ status: "scheduled", scheduled_at: when, error: null }).eq("id", followupId);
+    if ((fu as any).parent_id) await supabaseAdmin.from("outreach_emails").update({ followup_skipped: false }).eq("id", (fu as any).parent_id);
+  } else {
+    await supabaseAdmin.from("outreach_emails").update({ status: "draft", scheduled_at: null }).eq("id", followupId);
+    if ((fu as any).parent_id) await supabaseAdmin.from("outreach_emails").update({ followup_skipped: true }).eq("id", (fu as any).parent_id);
+  }
+  return { ok: true };
+}
+
+// The threading + engagement info a follow-up needs at send time: the parent's Message-ID
+// (to thread the reply) and whether the parent has since been replied to / converted.
+export async function getFollowupParent(parentId: string): Promise<{ message_id: string | null; replied_at: string | null; success_at: string | null } | null> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails").select("message_id, replied_at, success_at").eq("id", parentId).single();
+  if (!data) return null;
+  return { message_id: (data as any).message_id ?? null, replied_at: (data as any).replied_at ?? null, success_at: (data as any).success_at ?? null };
 }
 
 // Authors that lack an email (no mailto contact), optionally scoped to one campaign.
@@ -1797,46 +1832,68 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
 const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
 
 export async function getSendingStatus(opts: {
-  workflowId?: string; upcomingOffset?: number; upcomingLimit?: number; recentOffset?: number; recentLimit?: number;
+  workflowId?: string;
+  upcomingOffset?: number; upcomingLimit?: number;
+  recentOffset?: number; recentLimit?: number;
+  followupOffset?: number; followupLimit?: number;
 } = {}): Promise<{
   counts: Record<string, number>;
   upcoming: any[]; upcomingTotal: number;
   recent: any[]; recentTotal: number;
+  followups: any[]; followupsTotal: number;
 }> {
   const { workflowId } = opts;
   const upcomingOffset = opts.upcomingOffset ?? 0;
   const upcomingLimit = opts.upcomingLimit ?? 50;
   const recentOffset = opts.recentOffset ?? 0;
   const recentLimit = opts.recentLimit ?? 40;
+  const followupOffset = opts.followupOffset ?? 0;
+  const followupLimit = opts.followupLimit ?? 200;
 
   const scoped = (q: any) => (workflowId ? q.eq("workflow_id", workflowId) : q);
   const countOf = (build: (q: any) => any) =>
     build(scoped(supabaseAdmin.from("outreach_emails").select("id", { count: "exact", head: true })))
       .then(({ count }: any) => count ?? 0);
 
+  // Initials and follow-ups are counted/listed separately so follow-ups only ever surface in
+  // the Follow-ups tab (never mixed into Queued or Sent & failed). ROI denominators use the
+  // count of *initials* sent (people contacted), not raw sends, so follow-ups don't inflate it.
   const [
-    cScheduled, cReadyDraft, cSent, cFailed, cReplied, cSuccess, upcomingTotal, recentTotal,
-    { data: upcoming }, { data: recent },
+    cSentInitial, cFailedInitial, cReplied, cSuccess,
+    queuedTotal, recentTotal, followupsTotal,
+    { data: upcoming }, { data: recent }, { data: followups },
   ] = await Promise.all([
-    countOf((q) => q.eq("status", "scheduled")),
-    countOf((q) => q.in("status", ["ready", "draft"])),
-    countOf((q) => q.eq("status", "sent")),
-    countOf((q) => q.eq("status", "failed")),
-    countOf((q) => q.not("replied_at", "is", null)),
+    countOf((q) => q.eq("status", "sent").eq("kind", "initial")),
+    countOf((q) => q.eq("status", "failed").eq("kind", "initial")),
+    countOf((q) => q.not("replied_at", "is", null).eq("kind", "initial")),
     countOf((q) => q.not("success_at", "is", null)),
-    countOf((q) => q.eq("status", "scheduled")),
-    countOf((q) => q.in("status", ["sent", "failed"])),
+    countOf((q) => q.eq("status", "scheduled").eq("kind", "initial")),
+    countOf((q) => q.in("status", ["sent", "failed"]).eq("kind", "initial")),
+    countOf((q) => q.eq("kind", "followup")),
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
-      .eq("status", "scheduled").order("scheduled_at", { ascending: true }).range(upcomingOffset, upcomingOffset + upcomingLimit - 1),
+      .eq("status", "scheduled").eq("kind", "initial")
+      .order("scheduled_at", { ascending: true }).range(upcomingOffset, upcomingOffset + upcomingLimit - 1),
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
-      .in("status", ["sent", "failed"]).order("sent_at", { ascending: false, nullsFirst: false }).range(recentOffset, recentOffset + recentLimit - 1),
+      .in("status", ["sent", "failed"]).eq("kind", "initial")
+      .order("sent_at", { ascending: false, nullsFirst: false }).range(recentOffset, recentOffset + recentLimit - 1),
+    // Follow-ups of every status (scheduled/sent/failed/draft) — scheduled (sent_at null) first
+    // so armed, not-yet-sent ones sort to the top, then sent by recency.
+    scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
+      .eq("kind", "followup")
+      .order("sent_at", { ascending: false, nullsFirst: true }).range(followupOffset, followupOffset + followupLimit - 1),
   ]);
 
   const counts: Record<string, number> = {
-    scheduled: cScheduled, ready: cReadyDraft, draft: 0,
-    sent: cSent, failed: cFailed, replied: cReplied, success: cSuccess,
+    scheduled: queuedTotal, ready: 0, draft: 0,
+    sent: cSentInitial, failed: cFailedInitial, replied: cReplied, success: cSuccess,
+    followups: followupsTotal,
   };
-  return { counts, upcoming: upcoming ?? [], upcomingTotal, recent: recent ?? [], recentTotal };
+  return {
+    counts,
+    upcoming: upcoming ?? [], upcomingTotal: queuedTotal,
+    recent: recent ?? [], recentTotal,
+    followups: followups ?? [], followupsTotal,
+  };
 }
 
 // Emails that are due to send now (scheduled and their time has passed).

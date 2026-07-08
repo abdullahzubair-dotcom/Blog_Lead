@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc } from "@/lib/db/queries";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent } from "@/lib/db/queries";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
 import { decryptSecret } from "@/lib/crypto";
 import { acquireLock, releaseLock, incrDailyCount, getDailyCount } from "@/lib/redis";
@@ -68,6 +68,20 @@ export async function POST(req: NextRequest) {
       const cc = sentBy && sentBy !== sender ? sentBy : undefined;
       let res;
 
+      // Follow-ups thread into the original: pull the parent's Message-ID for In-Reply-To.
+      // Also a last-second guard — if the recipient replied or converted since this follow-up
+      // was scheduled, park it instead of nagging someone who already engaged.
+      let inReplyTo: string | undefined;
+      if ((email as any).kind === "followup" && (email as any).parent_id) {
+        const parent = await getFollowupParent((email as any).parent_id).catch(() => null);
+        if (parent?.replied_at || parent?.success_at) {
+          await updateOutreachEmail(email.id, { status: "draft", scheduled_at: null });
+          results.push({ id: email.id, ok: false, error: "parent replied — follow-up skipped" });
+          continue;
+        }
+        inReplyTo = parent?.message_id ?? undefined;
+      }
+
       if (sender) {
         const info = await senderInfo(sender);
         if (!info.pass) {
@@ -77,10 +91,10 @@ export async function POST(req: NextRequest) {
         }
         // Daily cap is per-sender (keyed by their email).
         if ((await getDailyCount(sender, day)) >= info.cap) { cappedSkipped++; continue; }
-        res = await sendEmailAs({ user: sender, pass: info.pass, fromName: info.fromName, to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc });
+        res = await sendEmailAs({ user: sender, pass: info.pass, fromName: info.fromName, to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc, inReplyTo, references: inReplyTo });
       } else {
         // Legacy path — no per-user sender: fall back to the server SMTP identity.
-        res = await sendEmail({ to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc });
+        res = await sendEmail({ to: email.recipient, subject: email.subject ?? "(no subject)", body: email.body ?? "", cc, inReplyTo, references: inReplyTo });
       }
 
       if (res.ok) {
@@ -103,8 +117,9 @@ export async function POST(req: NextRequest) {
       replies = await runReplyDetection();
     } catch (e: any) { replies.errors.push(e?.message ?? "reply detection error"); }
 
-    // Auto follow-ups — day-2, no-reply initials get a threaded nudge (kill-switch respected).
-    let followups = { generated: 0, sent: 0, skippedDisabled: false, errors: [] as string[] };
+    // Auto follow-ups — day-2, no-reply initials get a threaded nudge SCHEDULED (kill-switch
+    // respected). They send on a later run when due, threaded into the original.
+    let followups = { generated: 0, scheduled: 0, skippedDisabled: false, errors: [] as string[] };
     try {
       const { runFollowups } = await import("@/lib/email/followup");
       followups = await runFollowups();
