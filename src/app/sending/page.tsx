@@ -86,7 +86,7 @@ export default function SendingPage() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [tab, setTab] = useState<Tab>("queued");
-  const [sentFilter, setSentFilter] = useState<"all" | "replied" | "wins">("all");
+  const [sentFilter, setSentFilter] = useState<"all" | "replied" | "wins" | "followups">("all");
 
   // Fetch windows (bumped by the per-tab "load older from server" button).
   const [upcomingShown, setUpcomingShown] = useState(200);
@@ -468,7 +468,11 @@ export default function SendingPage() {
   };
 
   // filtered sent list
-  const sentFiltered = recentAll.filter((e) => sentFilter === "replied" ? !!e.replied_at : sentFilter === "wins" ? !!e.success_at : true);
+  const sentFiltered = recentAll.filter((e) =>
+    sentFilter === "replied" ? !!e.replied_at
+    : sentFilter === "wins" ? !!e.success_at
+    : sentFilter === "followups" ? e.kind === "followup"
+    : true);
 
   const fuSort = (a: StatusEmail, b: StatusEmail) => {
     const au = a.status !== "sent" && a.status !== "failed";
@@ -576,10 +580,10 @@ export default function SendingPage() {
           <>
             <div className="px-3 py-2 border-b border-border flex items-center gap-1 text-[11px]">
               <span className="text-muted-foreground mr-1">Show:</span>
-              {(["all", "replied", "wins"] as const).map((f) => (
-                <button key={f} onClick={() => setSentFilter(f)} className={`px-2 py-0.5 rounded-full ${sentFilter === f ? "bg-violet-500/20 text-violet-300" : "text-muted-foreground hover:bg-muted/40"}`}>{f}</button>
+              {([["all", "all"], ["replied", "replied"], ["wins", "wins"], ["followups", "followed up"]] as const).map(([f, label]) => (
+                <button key={f} onClick={() => setSentFilter(f)} className={`px-2 py-0.5 rounded-full ${sentFilter === f ? "bg-violet-500/20 text-violet-300" : "text-muted-foreground hover:bg-muted/40"}`}>{label}</button>
               ))}
-              <span className="ml-auto text-muted-foreground/60">Follow-ups live in their own tab.</span>
+              <span className="ml-auto text-muted-foreground/60">Pending follow-ups live in the Follow-ups tab.</span>
             </div>
             <div className="max-h-[560px] overflow-y-auto">
               <GroupedList
