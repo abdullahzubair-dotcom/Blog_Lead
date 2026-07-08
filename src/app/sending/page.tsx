@@ -313,7 +313,7 @@ export default function SendingPage() {
             <div key={sk} className="border-b border-border last:border-b-0">
               <button
                 onClick={() => toggleSender(stateKey)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 bg-background border-b border-border text-left hover:bg-muted/30 sticky top-0 z-20"
+                className="w-full flex items-center gap-2 px-4 py-2.5 bg-card border-b border-border text-left hover:bg-muted/50 sticky top-0 z-20 shadow-[0_1px_4px_-1px_rgba(0,0,0,0.4)]"
               >
                 <ChevronRight className={`h-3.5 w-3.5 text-muted-foreground/60 transition-transform shrink-0 ${collapsed ? "" : "rotate-90"}`} />
                 <Users className="h-3.5 w-3.5 text-violet-400 shrink-0" />
@@ -324,11 +324,11 @@ export default function SendingPage() {
                 <div>
                   {[...byDate.entries()].map(([day, dayEmails]) => (
                     <div key={day}>
-                      <div className="px-4 py-1.5 pl-9 bg-muted/40 border-b border-border/60 text-[11px] font-medium text-muted-foreground">
+                      <div className="px-4 py-1.5 pl-9 bg-muted border-b border-border/60 text-[11px] font-medium text-muted-foreground">
                         {day} <span className="font-normal text-muted-foreground/60">· {dayEmails.length}</span>
                       </div>
-                      <div className="divide-y divide-border">
-                        {dayEmails.map((e) => <div key={e.id} className="pl-9 pr-4">{renderRow(e)}</div>)}
+                      <div className="divide-y divide-border bg-card">
+                        {dayEmails.map((e) => <div key={e.id} className="pl-9 pr-4 bg-card">{renderRow(e)}</div>)}
                       </div>
                     </div>
                   ))}
@@ -536,7 +536,7 @@ export default function SendingPage() {
       </div>
 
       {/* Tabs */}
-      <div className="rounded-xl border border-border overflow-hidden">
+      <div className="rounded-xl border border-border overflow-hidden bg-card">
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border bg-card">
           {tabs.map((t) => (
             <button
