@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Megaphone, Plus, X, Loader2 } from "lucide-react";
+import { Megaphone, Plus, X, Loader2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -19,8 +19,20 @@ export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null); // null = creating new
   const [form, setForm] = useState({ name: "", keywordInput: "", keywords: [] as string[], seedWriterName: "", seedArticleUrl: "" });
   const [saving, setSaving] = useState(false);
+
+  function openNew() {
+    setEditingId(null);
+    setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "" });
+    setCreating(true);
+  }
+  function openEdit(c: Campaign) {
+    setEditingId(c.id);
+    setForm({ name: c.name, keywordInput: "", keywords: c.keywords ?? [], seedWriterName: c.seed_writer_name ?? "", seedArticleUrl: c.seed_article_url ?? "" });
+    setCreating(true);
+  }
 
   async function fetchCampaigns() {
     setLoading(true);
@@ -41,21 +53,21 @@ export default function CampaignsPage() {
     setForm(f => ({ ...f, keywords: f.keywords.filter(k => k !== kw) }));
   }
 
-  async function handleCreate() {
+  async function handleCreateOrSave() {
     if (!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim())) return;
     setSaving(true);
-    const res = await fetch("/api/campaigns", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: form.name,
-        keywords: form.keywords,
-        seed_writer_name: form.seedWriterName.trim() || undefined,
-        seed_article_url: form.seedArticleUrl.trim() || undefined,
-      }),
-    });
+    const payload = {
+      name: form.name,
+      keywords: form.keywords,
+      seed_writer_name: form.seedWriterName.trim() || null,
+      seed_article_url: form.seedArticleUrl.trim() || null,
+    };
+    const res = editingId
+      ? await fetch(`/api/campaigns/${editingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      : await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (res.ok) {
       setCreating(false);
+      setEditingId(null);
       setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "" });
       fetchCampaigns();
     }
@@ -77,7 +89,7 @@ export default function CampaignsPage() {
             </p>
           </div>
         </div>
-        <Button onClick={() => setCreating(true)} size="sm">
+        <Button onClick={openNew} size="sm">
           <Plus className="h-4 w-4 mr-1.5" />
           New Campaign
         </Button>
@@ -92,7 +104,7 @@ export default function CampaignsPage() {
         <div className="border border-dashed border-border rounded-xl flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">
           <Megaphone className="h-8 w-8 opacity-30" />
           <p className="text-sm">No campaigns yet — create one, then select it when running discovery</p>
-          <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
+          <Button variant="outline" size="sm" onClick={openNew}>
             <Plus className="h-4 w-4 mr-1.5" />Create Campaign
           </Button>
         </div>
@@ -107,7 +119,12 @@ export default function CampaignsPage() {
                     {new Date(c.created_at).toLocaleDateString()}
                   </p>
                 </div>
-                <StatusBadge status={c.status} />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <StatusBadge status={c.status} />
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => openEdit(c)}>
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
 
               {/* Keywords + seed writer */}
@@ -141,7 +158,7 @@ export default function CampaignsPage() {
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>New Campaign</DialogTitle>
+            <DialogTitle>{editingId ? "Edit Campaign" : "New Campaign"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
@@ -166,7 +183,7 @@ export default function CampaignsPage() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Press Enter or click Add. These focus what writers get discovered when you select this campaign in the discovery dropdown.
+                Press Enter or click Add. {editingId ? "Editing keywords takes effect the next time you run discovery for this campaign — the new keywords are searched with priority." : "These focus what writers get discovered when you select this campaign in the discovery dropdown, and are searched with priority."}
               </p>
               {form.keywords.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
@@ -200,7 +217,7 @@ export default function CampaignsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button onClick={handleCreate} disabled={!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim()) || saving}>
+            <Button onClick={handleCreateOrSave} disabled={!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim()) || saving}>
               {saving && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Create Campaign
             </Button>
