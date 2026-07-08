@@ -231,31 +231,48 @@ In ONE short phrase (max 18 words), tell a writer in plain human words exactly w
 }
 
 // Group findings by broken link so a site-wide dead nav link is one entry, not hundreds.
-// EVERY broken link goes in the digest, numbered for readability — long lists are split
-// across multiple Slack posts by the caller, never truncated.
+// EVERY broken link and EVERY page it appears on goes in the digest — nothing truncated —
+// split into "Authored" first (actionable per writer) then "No author", with continuous
+// numbering. Long digests are split across multiple Slack posts by the caller.
 const MAX_AI_LOCATIONS = 12; // live AI-locate cap for older runs; new runs have persisted hints
 async function renderFindings(findings: Finding[], resolved: Record<string, string>): Promise<string> {
   const byLink = new Map<string, Finding[]>();
   for (const f of findings) {
     (byLink.get(f.link_url) ?? byLink.set(f.link_url, []).get(f.link_url)!).push(f);
   }
+  // A link-group is "authored" when any page it sits on has a known author.
+  const authored: Array<[string, Finding[]]> = [];
+  const unauthored: Array<[string, Finding[]]> = [];
+  for (const entry of byLink.entries()) {
+    (entry[1].some((f) => f.page_author) ? authored : unauthored).push(entry);
+  }
+
   const lines: string[] = [];
   let aiCalls = 0;
   let n = 0;
-  for (const [link, fs] of byLink) {
+  const renderGroup = async ([link, fs]: [string, Finding[]]) => {
     n++;
     const first = fs[0];
     const label = REASON_LABEL[first.reason] ?? first.reason;
     lines.push(`*${n}.* ${link}  _(${label})_`);
-    // Prefer the hint persisted at finalize; live AI call only for older runs without one.
+    // Prefer the hint persisted at capture/finalize; live AI call only for older runs.
     const location = first.location_hint ?? (aiCalls < MAX_AI_LOCATIONS ? (aiCalls++, await aiLocateFinding(first)) : null);
     if (location) lines.push(`   📍 ${location}`);
-    for (const f of fs.slice(0, 3)) {
+    for (const f of fs) {
       const ctx = (f.context_text ?? "").slice(0, 160);
       lines.push(`   ↳ on <${f.page_url}|${new URL(f.page_url).pathname}> — by ${authorTag(f.page_author, resolved)}${f.anchor_text ? ` — link text: "${f.anchor_text.slice(0, 60)}"` : ""}`);
       if (!location && ctx && isProseContext(ctx)) lines.push(`      _"…${ctx}…"_`);
     }
-    if (fs.length > 3) lines.push(`   ↳ …and on ${fs.length - 3} more page${fs.length - 3 === 1 ? "" : "s"}`);
+  };
+
+  if (authored.length > 0) {
+    lines.push(`:writing_hand: *Authored pages (${authored.length} broken link${authored.length === 1 ? "" : "s"})*`);
+    for (const g of authored) await renderGroup(g);
+  }
+  if (unauthored.length > 0) {
+    if (authored.length > 0) lines.push("");
+    lines.push(`:page_facing_up: *Pages without an author (${unauthored.length} broken link${unauthored.length === 1 ? "" : "s"})*`);
+    for (const g of unauthored) await renderGroup(g);
   }
   return lines.join("\n");
 }
@@ -317,14 +334,14 @@ export async function postToSlack(text: string): Promise<{ ok: boolean; error?: 
   }
 }
 
-// Compose + post the digest for a completed run. Posts an "all clean" note when nothing
-// broke, so the daily outline always arrives.
-export async function postAuditDigest(runId: string): Promise<{ ok: boolean; error?: string }> {
+// Compose the digest text for a run WITHOUT posting — used by postAuditDigest and by
+// anything that needs the full text (e.g. copying it into an email).
+export async function composeAuditDigest(runId: string): Promise<{ text: string } | { error: string }> {
   const [{ data: run }, { data: findings }] = await Promise.all([
     supabaseAdmin.from("link_audit_runs").select("*").eq("id", runId).single(),
     supabaseAdmin.from("link_audit_findings").select("*").eq("run_id", runId).order("link_url"),
   ]);
-  if (!run) return { ok: false, error: "run not found" };
+  if (!run) return { error: "run not found" };
 
   const all = (findings ?? []) as Finding[];
   const fs = all.filter((f) => f.reason !== "unreachable");
@@ -357,9 +374,17 @@ export async function postAuditDigest(runId: string): Promise<{ ok: boolean; err
   } else if (run.unreachable > 0) {
     text += `\n\n_${run.unreachable} links couldn't be verified (bot-blocked or timed out) — not counted as broken._`;
   }
+  return { text };
+}
+
+// Compose + post the digest for a completed run. Posts an "all clean" note when nothing
+// broke, so the daily outline always arrives.
+export async function postAuditDigest(runId: string): Promise<{ ok: boolean; error?: string }> {
+  const composed = await composeAuditDigest(runId);
+  if ("error" in composed) return { ok: false, error: composed.error };
 
   // Post ALL of it — split across sequential messages when long, never truncated.
-  const chunks = chunkForSlack(text);
+  const chunks = chunkForSlack(composed.text);
   let res: { ok: boolean; error?: string } = { ok: true };
   for (let i = 0; i < chunks.length; i++) {
     const prefix = i > 0 ? `:link: _(continued ${i + 1}/${chunks.length})_\n` : "";
