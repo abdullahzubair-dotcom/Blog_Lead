@@ -1299,10 +1299,51 @@ export async function updateOutreachEmail(id: string, data: {
   scheduled_at?: string | null; // null = unschedule (cancel a queued send)
   sent_at?: string | null;
   error?: string | null;
-  replied_at?: string | null; // manual "they replied" mark — null to unmark
+  replied_at?: string | null; // set by IMAP reply detection
+  message_id?: string | null; // RFC Message-ID we sent with, for reply threading
+  followup_skipped?: boolean;  // per-email safety valve for auto follow-ups
+  success_at?: string | null;
+  success_link?: string | null;
+  success_notes?: string | null;
 }): Promise<void> {
   const { error } = await supabaseAdmin.from("outreach_emails").update(data).eq("id", id);
   if (error) throw error;
+}
+
+// ─── Reply detection (IMAP) ─────────────────────────────────────────────────────
+
+// Outstanding sent emails (last N days, no reply yet) grouped by the mailbox that sent
+// them, with the recipient + subject needed for reply matching. sender_email "" = legacy
+// env-sender sends (checked against the env SMTP account).
+export async function getOutstandingSentForReplyCheck(days = 30): Promise<Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
+  const since = new Date(Date.now() - days * 86400_000).toISOString();
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("id, sender_email, message_id, subject, sent_at, author:authors(contacts(type, value))")
+    .eq("status", "sent")
+    .is("replied_at", null)
+    .gte("sent_at", since)
+    .limit(2000);
+  const out = new Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>();
+  for (const e of data ?? []) {
+    const mailto = ((e as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
+    const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
+    if (!recipient) continue;
+    const key = (e as any).sender_email ?? "";
+    if (!out.has(key)) out.set(key, []);
+    out.get(key)!.push({ id: e.id, message_id: (e as any).message_id ?? null, recipient, subject: e.subject ?? "", sent_at: (e as any).sent_at });
+  }
+  return out;
+}
+
+export async function markEmailsReplied(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await supabaseAdmin.from("outreach_emails").update({ replied_at: new Date().toISOString() }).in("id", ids).is("replied_at", null);
+}
+
+export async function markRepliesChecked(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await supabaseAdmin.from("outreach_emails").update({ reply_checked_at: new Date().toISOString() }).in("id", ids);
 }
 
 // Authors that lack an email (no mailto contact), optionally scoped to one campaign.

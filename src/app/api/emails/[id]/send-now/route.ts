@@ -25,7 +25,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   });
 
   if (res.ok) {
-    await updateOutreachEmail(id, { status: "sent", sent_at: new Date().toISOString(), error: undefined });
+    await updateOutreachEmail(id, { status: "sent", sent_at: new Date().toISOString(), error: undefined, message_id: res.messageId ?? undefined });
     return NextResponse.json({ ok: true });
   }
   await updateOutreachEmail(id, { status: "failed", error: res.error });

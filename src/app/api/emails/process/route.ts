@@ -84,7 +84,8 @@ export async function POST(req: NextRequest) {
       }
 
       if (res.ok) {
-        await updateOutreachEmail(email.id, { status: "sent", sent_at: new Date().toISOString(), error: undefined });
+        // Store the Message-ID so IMAP reply detection can thread replies to this send.
+        await updateOutreachEmail(email.id, { status: "sent", sent_at: new Date().toISOString(), error: undefined, message_id: res.messageId ?? undefined });
         await incrDailyCount(sender ?? email.workflow_id, day);
         sent++; results.push({ id: email.id, ok: true });
       } else {
@@ -93,7 +94,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, results });
+    // Auto reply detection — read each sender's mailbox (rate-limited per account) and mark
+    // any outstanding sent emails that got a reply. Read-only; failures never block sending.
+    let replies = { accountsChecked: 0, repliesFound: 0, errors: [] as string[] };
+    try {
+      const { runReplyDetection } = await import("@/lib/email/imap");
+      replies = await runReplyDetection();
+    } catch (e: any) { replies.errors.push(e?.message ?? "reply detection error"); }
+
+    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, results });
   } finally {
     await releaseLock(LOCK_KEY, lockToken);
   }

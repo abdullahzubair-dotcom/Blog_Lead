@@ -41,6 +41,8 @@ export async function sendEmail(opts: {
   fromName?: string;
   fromEmail?: string;
   cc?: string;
+  inReplyTo?: string;   // original Message-ID — threads a follow-up into the same thread
+  references?: string;
 }): Promise<SendResult> {
   const tx = getTransport();
   if (!tx) return { ok: false, error: "SMTP not configured (missing SMTP_HOST/USER/PASS)" };
@@ -51,6 +53,8 @@ export async function sendEmail(opts: {
       to: opts.to,
       cc: opts.cc,
       subject: opts.subject,
+      inReplyTo: opts.inReplyTo,
+      references: opts.references,
       text: opts.body,
       // Simple text→HTML: preserve line breaks
       html: opts.body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>"),
@@ -71,11 +75,12 @@ function htmlify(body: string): string {
 // so they see replies and can reply themselves.
 export async function sendEmailAs(opts: {
   user: string; pass: string; fromName?: string; to: string; subject: string; body: string; cc?: string;
+  inReplyTo?: string; references?: string; // thread a follow-up into the original thread
 }): Promise<SendResult> {
   try {
     const tx = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user: opts.user, pass: opts.pass } });
     const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
-    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, text: opts.body, html: htmlify(opts.body) });
+    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, inReplyTo: opts.inReplyTo, references: opts.references, text: opts.body, html: htmlify(opts.body) });
     tx.close();
     return { ok: true, messageId: info.messageId };
   } catch (e: any) {
