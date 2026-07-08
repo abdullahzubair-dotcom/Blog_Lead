@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScoreBadge } from "./ScoreBadge";
 import { ContactSurface } from "./ContactSurface";
-import { ExternalLink, Search, Loader2, CheckCircle2, AlertTriangle, Link2, MailCheck, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ExternalLink, Search, Loader2, CheckCircle2, AlertTriangle, Link2, MailCheck, ShieldAlert, ShieldCheck, Ban } from "lucide-react";
 
 const SAFETY_CATEGORY_LABEL: Record<string, string> = {
   nsfw: "NSFW",
@@ -68,6 +68,20 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
       body: JSON.stringify({ contacted: next }),
     }).catch(() => {});
     setSavingContacted(false);
+  }
+
+  // "Discarded" toggle — hide this author from every workflow.
+  const [discarded, setDiscarded] = useState<boolean>(false);
+  const [savingDiscarded, setSavingDiscarded] = useState(false);
+  useEffect(() => { setDiscarded(!!prospect?.author?.discarded); }, [prospect?.author?.discarded, open]);
+  async function toggleDiscarded(next: boolean) {
+    if (!authorId) return;
+    setDiscarded(next); setSavingDiscarded(true);
+    await fetch(`/api/authors/${authorId}/discard`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ discarded: next }),
+    }).catch(() => {});
+    setSavingDiscarded(false);
   }
 
   async function refind(authorId: string) {
@@ -130,6 +144,18 @@ export function ProspectDrawer({ prospect, open, onClose }: ProspectDrawerProps)
             disabled={contacted === null || savingContacted}
             onCheckedChange={toggleContacted}
           />
+        </div>
+
+        {/* Discarded toggle — hide from every workflow */}
+        <div className={`flex items-center justify-between gap-3 px-6 py-3 border-b border-border shrink-0 ${discarded ? "bg-red-500/10" : "bg-muted/10"}`}>
+          <div className="flex items-center gap-2 text-sm">
+            <Ban className={`h-4 w-4 ${discarded ? "text-red-400" : "text-muted-foreground/50"}`} />
+            <span className="font-medium">Discarded</span>
+            <span className="text-xs text-muted-foreground">
+              {discarded ? "hidden from all workflows" : "eligible to appear in workflows"}
+            </span>
+          </div>
+          <Switch checked={discarded} disabled={savingDiscarded} onCheckedChange={toggleDiscarded} />
         </div>
 
         {/* ── Scrollable body ── */}

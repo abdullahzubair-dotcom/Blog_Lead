@@ -261,7 +261,8 @@ export default function WorkflowsPage() {
     const res = await fetch("/api/workflows", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: form.name, campaign_id: form.campaign_id || undefined, filters: {} }),
+      // Default filters: only people not yet contacted who have an email on file.
+      body: JSON.stringify({ name: form.name, campaign_id: form.campaign_id || undefined, filters: { notContacted: true, emailStatus: "has" } }),
     });
     if (res.ok) {
       const wf = await res.json();
@@ -320,7 +321,7 @@ export default function WorkflowsPage() {
     setAddQuery(q);
     if (q.trim().length < 2) { setAddResults([]); return; }
     setAddSearching(true);
-    const res = await fetch(`/api/prospects?search=${encodeURIComponent(q)}&limit=15`).then((r) => r.ok ? r.json() : null).catch(() => null);
+    const res = await fetch(`/api/prospects?search=${encodeURIComponent(q)}&limit=15&exclude_discarded=true`).then((r) => r.ok ? r.json() : null).catch(() => null);
     setAddResults(res?.prospects ?? []);
     setAddSearching(false);
   }

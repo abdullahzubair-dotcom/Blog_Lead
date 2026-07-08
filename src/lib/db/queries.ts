@@ -414,6 +414,7 @@ export async function getProspects(opts: {
   search?: string;
   sortBy?: "composite" | "freshness" | "authority" | "relevance";
   campaignId?: string;
+  excludeDiscarded?: boolean;
 }): Promise<{ prospects: ProspectCard[]; total: number }> {
   const limit = opts.limit ?? 24;
   const offset = opts.offset ?? 0;
@@ -426,8 +427,10 @@ export async function getProspects(opts: {
   // Always exclude non-person "authors" (publication names, "Staff", labels, bio blurbs
   // that discovery mis-extracted). Keeps the prospect list to real people.
   {
-    const rows = await fetchAllRows<{ id: string; full_name: string }>("authors", "id, full_name");
-    filterSets.push(new Set(rows.filter((r) => isLikelyPersonName(r.full_name)).map((r) => r.id)));
+    const rows = await fetchAllRows<{ id: string; full_name: string; discarded: boolean | null }>("authors", "id, full_name, discarded");
+    filterSets.push(new Set(
+      rows.filter((r) => isLikelyPersonName(r.full_name) && !(opts.excludeDiscarded && r.discarded)).map((r) => r.id)
+    ));
   }
 
   // Campaign filter: only authors discovered for this campaign
@@ -1150,6 +1153,10 @@ export async function runWorkflowFilters(
     }
   }
 
+  // Always exclude discarded authors — they're hidden from every workflow.
+  const discardedRows = await fetchAllRows<{ id: string }>("authors", "id", (q) => q.eq("discarded", true));
+  for (const r of discardedRows) validIds.delete(r.id);
+
   if (validIds.size === 0) return [];
 
   // Get score-sorted order
@@ -1615,6 +1622,11 @@ export async function getContactedAuthorIds(excludeWorkflowId?: string): Promise
 // toggle). Pass null to clear it and fall back to derived-from-outreach behavior.
 export async function setContactedOverride(authorId: string, value: boolean | null): Promise<void> {
   await supabaseAdmin.from("authors").update({ contacted_override: value }).eq("id", authorId);
+}
+
+// Discard an author — hidden from every workflow (runWorkflowFilters excludes discarded).
+export async function setAuthorDiscarded(authorId: string, discarded: boolean): Promise<void> {
+  await supabaseAdmin.from("authors").update({ discarded }).eq("id", authorId);
 }
 
 // Whether ONE author counts as contacted right now (derived history OR manual override).

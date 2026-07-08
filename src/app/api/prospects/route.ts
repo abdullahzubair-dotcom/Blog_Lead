@@ -15,10 +15,11 @@ export async function GET(req: NextRequest) {
   const sortBy = (searchParams.get("sortBy") as any) ?? "composite";
   const include = searchParams.get("include") ?? "";
   const campaignId = searchParams.get("campaign_id") ?? undefined;
+  const excludeDiscarded = searchParams.get("exclude_discarded") === "true";
 
   try {
     const [result, stats, toolCounts, timeline, provenance, publications] = await Promise.all([
-      getProspects({ limit, offset, minScore, archetype, tool, hasContact, emailStatus, search, sortBy, campaignId }),
+      getProspects({ limit, offset, minScore, archetype, tool, hasContact, emailStatus, search, sortBy, campaignId, excludeDiscarded }),
       include.includes("stats") ? getDashboardStats() : null,
       include.includes("charts") ? getToolMentionCounts() : null,
       include.includes("charts") ? getFreshnessTimeline() : null,

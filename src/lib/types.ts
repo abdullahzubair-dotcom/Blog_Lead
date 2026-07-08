@@ -22,6 +22,7 @@ export interface Author {
   same_as_json: string[];
   description?: string;
   source?: string;
+  discarded?: boolean;
   safety_score?: number | null;
   safety_summary?: string | null;
   safety_checked_at?: string | null;
