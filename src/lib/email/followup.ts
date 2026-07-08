@@ -65,9 +65,11 @@ export interface FollowupResult { generated: number; scheduled: number; skippedD
 // Generate + SCHEDULE follow-ups (does not send). One per recipient (createFollowupRow's
 // parent already guarantees no duplicate). Handles the backlog too: any initial >2 days old
 // with no reply/win and no follow-up yet gets one scheduled ~a day out.
-export async function runFollowups(): Promise<FollowupResult> {
+export async function runFollowups(force = false): Promise<FollowupResult> {
   const result: FollowupResult = { generated: 0, scheduled: 0, skippedDisabled: false, errors: [] };
-  if (!(await followupsEnabled())) { result.skippedDisabled = true; return result; }
+  // `force` = manual backfill (e.g. the one-time script for the existing backlog); it ignores
+  // the global kill-switch but still respects per-email skips and the one-per-recipient rule.
+  if (!force && !(await followupsEnabled())) { result.skippedDisabled = true; return result; }
 
   const candidates = await getEmailsNeedingFollowup(FOLLOWUP_DAYS, 50);
   const when = new Date(Date.now() + FOLLOWUP_LEAD_MS).toISOString();

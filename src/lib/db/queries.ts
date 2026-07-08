@@ -1290,8 +1290,8 @@ export async function upsertOutreachEmail(data: {
   const { data: email, error } = await supabaseAdmin
     .from("outreach_emails")
     .upsert(
-      { ...data, status: data.status ?? "draft" },
-      { onConflict: "workflow_id,author_id" }
+      { ...data, kind: "initial", status: data.status ?? "draft" },
+      { onConflict: "workflow_id,author_id,kind" }
     )
     .select()
     .single();
