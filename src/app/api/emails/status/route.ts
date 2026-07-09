@@ -16,9 +16,10 @@ export async function GET(req: NextRequest) {
   const recentLimit = Math.min(500, parseInt(sp.get("recent_limit") ?? "40", 10) || 40);
   const upcomingLimit = Math.min(500, parseInt(sp.get("upcoming_limit") ?? "60", 10) || 60);
   const followupLimit = Math.min(500, parseInt(sp.get("followup_limit") ?? "200", 10) || 200);
+  const repliedLimit = Math.min(500, parseInt(sp.get("replied_limit") ?? "200", 10) || 200);
 
-  const [{ counts, upcoming, upcomingTotal, recent, recentTotal, followups, followupsTotal }, sharedSenders] = await Promise.all([
-    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit, followupLimit }),
+  const [{ counts, upcoming, upcomingTotal, recent, recentTotal, followups, followupsTotal, replied, repliedTotal }, sharedSenders] = await Promise.all([
+    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit, followupLimit, repliedLimit }),
     getSharedSenders(),
   ]);
   const sharedLabelByEmail = new Map(sharedSenders.map((s) => [s.email, s.label]));
@@ -45,6 +46,11 @@ export async function GET(req: NextRequest) {
       sent_at: e.sent_at,
       error: e.error,
       replied_at: e.replied_at ?? null,
+      bounced_at: e.bounced_at ?? null,
+      reply_kind: e.reply_kind ?? null,
+      reply_from: e.reply_from ?? null,
+      reply_subject: e.reply_subject ?? null,
+      reply_excerpt: e.reply_excerpt ?? null,
       success_at: e.success_at ?? null,
       success_link: e.success_link ?? null,
       success_notes: e.success_notes ?? null,
@@ -67,5 +73,6 @@ export async function GET(req: NextRequest) {
     upcoming: upcoming.map(enrich), upcomingTotal,
     recent: recent.map(enrich), recentTotal,
     followups: followups.map(enrich), followupsTotal,
+    replied: replied.map(enrich), repliedTotal,
   });
 }

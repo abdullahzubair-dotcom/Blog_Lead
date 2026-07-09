@@ -1306,12 +1306,17 @@ export async function updateOutreachEmail(id: string, data: {
   scheduled_at?: string | null; // null = unschedule (cancel a queued send)
   sent_at?: string | null;
   error?: string | null;
-  replied_at?: string | null; // set by IMAP reply detection
+  replied_at?: string | null; // set by IMAP reply detection (real human replies only)
   message_id?: string | null; // RFC Message-ID we sent with, for reply threading
   followup_skipped?: boolean;  // per-email safety valve for auto follow-ups
   success_at?: string | null;
   success_link?: string | null;
   success_notes?: string | null;
+  reply_kind?: string | null;    // reply | bounce | auto — classification of the inbound match
+  reply_from?: string | null;
+  reply_subject?: string | null;
+  reply_excerpt?: string | null;
+  bounced_at?: string | null;    // set when the address bounced (not a real reply)
 }): Promise<void> {
   const { error } = await supabaseAdmin.from("outreach_emails").update(data).eq("id", id);
   if (error) throw error;
@@ -1322,15 +1327,19 @@ export async function updateOutreachEmail(id: string, data: {
 // Outstanding sent emails (last N days, no reply yet) grouped by the mailbox that sent
 // them, with the recipient + subject needed for reply matching. sender_email "" = legacy
 // env-sender sends (checked against the env SMTP account).
-export async function getOutstandingSentForReplyCheck(days = 30): Promise<Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
+export async function getOutstandingSentForReplyCheck(days = 30, opts: { includeReplied?: boolean } = {}): Promise<Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
   const since = new Date(Date.now() - days * 86400_000).toISOString();
-  const { data } = await supabaseAdmin
+  // Normal sweep skips already-replied and already-bounced sends. A rescan (includeReplied)
+  // re-examines everything so mis-classified past "replies" (bounces) get corrected.
+  let q = supabaseAdmin
     .from("outreach_emails")
     .select("id, sender_email, message_id, subject, sent_at, author:authors(contacts(type, value))")
     .eq("status", "sent")
-    .is("replied_at", null)
+    .is("bounced_at", null)
     .gte("sent_at", since)
     .limit(2000);
+  if (!opts.includeReplied) q = q.is("replied_at", null);
+  const { data } = await q;
   const out = new Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>();
   for (const e of data ?? []) {
     const mailto = ((e as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
@@ -1829,18 +1838,20 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
 // Sending status for the progress page. Counts are ALL-TIME (via exact count queries, not
 // a capped page), so the top stats reflect the entirety of sending history. The queued and
 // sent/failed lists are paginated so the UI can "load more" back through everything.
-const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
+const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, bounced_at, reply_kind, reply_from, reply_subject, reply_excerpt, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
 
 export async function getSendingStatus(opts: {
   workflowId?: string;
   upcomingOffset?: number; upcomingLimit?: number;
   recentOffset?: number; recentLimit?: number;
   followupOffset?: number; followupLimit?: number;
+  repliedOffset?: number; repliedLimit?: number;
 } = {}): Promise<{
   counts: Record<string, number>;
   upcoming: any[]; upcomingTotal: number;
   recent: any[]; recentTotal: number;
   followups: any[]; followupsTotal: number;
+  replied: any[]; repliedTotal: number;
 }> {
   const { workflowId } = opts;
   const upcomingOffset = opts.upcomingOffset ?? 0;
@@ -1849,6 +1860,8 @@ export async function getSendingStatus(opts: {
   const recentLimit = opts.recentLimit ?? 40;
   const followupOffset = opts.followupOffset ?? 0;
   const followupLimit = opts.followupLimit ?? 200;
+  const repliedOffset = opts.repliedOffset ?? 0;
+  const repliedLimit = opts.repliedLimit ?? 200;
 
   const scoped = (q: any) => (workflowId ? q.eq("workflow_id", workflowId) : q);
   const countOf = (build: (q: any) => any) =>
@@ -1859,13 +1872,14 @@ export async function getSendingStatus(opts: {
   // the Follow-ups tab (never mixed into Queued or Sent & failed). ROI denominators use the
   // count of *initials* sent (people contacted), not raw sends, so follow-ups don't inflate it.
   const [
-    cSentInitial, cFailedInitial, cReplied, cSuccess,
+    cSentInitial, cFailedInitial, cReplied, cBounced, cSuccess,
     queuedTotal, recentTotal, followupsTotal,
-    { data: upcoming }, { data: recent }, { data: followups },
+    { data: upcoming }, { data: recent }, { data: followups }, { data: replied },
   ] = await Promise.all([
     countOf((q) => q.eq("status", "sent").eq("kind", "initial")),
     countOf((q) => q.eq("status", "failed").eq("kind", "initial")),
     countOf((q) => q.not("replied_at", "is", null).eq("kind", "initial")),
+    countOf((q) => q.not("bounced_at", "is", null).eq("kind", "initial")),
     countOf((q) => q.not("success_at", "is", null)),
     countOf((q) => q.eq("status", "scheduled").eq("kind", "initial")),
     // Sent & failed is the chronological record of everything that actually went out —
@@ -1883,11 +1897,15 @@ export async function getSendingStatus(opts: {
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
       .eq("kind", "followup")
       .order("sent_at", { ascending: false, nullsFirst: true }).range(followupOffset, followupOffset + followupLimit - 1),
+    // Everything that got a genuine human reply — its own tab, most recent first.
+    scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
+      .not("replied_at", "is", null)
+      .order("replied_at", { ascending: false }).range(repliedOffset, repliedOffset + repliedLimit - 1),
   ]);
 
   const counts: Record<string, number> = {
     scheduled: queuedTotal, ready: 0, draft: 0,
-    sent: cSentInitial, failed: cFailedInitial, replied: cReplied, success: cSuccess,
+    sent: cSentInitial, failed: cFailedInitial, replied: cReplied, bounced: cBounced, success: cSuccess,
     followups: followupsTotal,
   };
   return {
@@ -1895,6 +1913,7 @@ export async function getSendingStatus(opts: {
     upcoming: upcoming ?? [], upcomingTotal: queuedTotal,
     recent: recent ?? [], recentTotal,
     followups: followups ?? [], followupsTotal,
+    replied: replied ?? [], repliedTotal: cReplied,
   };
 }
 

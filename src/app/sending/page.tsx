@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock, ChevronRight, Trophy, CornerDownRight, ExternalLink, Users } from "lucide-react";
+import { Send, Loader2, CheckCircle2, XCircle, Clock, RefreshCw, Play, Globe, Edit2, Ban, Check, CalendarClock, ChevronRight, Trophy, CornerDownRight, ExternalLink, Users, Reply } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +36,11 @@ interface StatusEmail {
   sent_at?: string;
   error?: string;
   replied_at?: string | null;
+  bounced_at?: string | null;
+  reply_kind?: string | null;   // reply | bounce | auto
+  reply_from?: string | null;
+  reply_subject?: string | null;
+  reply_excerpt?: string | null;
   success_at?: string | null;
   success_link?: string | null;
   success_notes?: string | null;
@@ -50,9 +55,10 @@ interface Status {
   upcoming: StatusEmail[]; upcomingTotal: number;
   recent: StatusEmail[]; recentTotal: number;
   followups: StatusEmail[]; followupsTotal: number;
+  replied: StatusEmail[]; repliedTotal: number;
 }
 
-type Tab = "queued" | "sent" | "followups";
+type Tab = "queued" | "sent" | "replied" | "followups";
 
 function Stat({ label, value, color, suffix, title, sub }: { label: string; value: number; color: string; suffix?: string; title?: string; sub?: string }) {
   return (
@@ -86,12 +92,13 @@ export default function SendingPage() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [tab, setTab] = useState<Tab>("queued");
-  const [sentFilter, setSentFilter] = useState<"all" | "replied" | "wins" | "followups">("all");
+  const [sentFilter, setSentFilter] = useState<"all" | "replied" | "bounced" | "wins" | "followups">("all");
 
   // Fetch windows (bumped by the per-tab "load older from server" button).
   const [upcomingShown, setUpcomingShown] = useState(200);
   const [recentShown, setRecentShown] = useState(80);
   const [followupsShown, setFollowupsShown] = useState(200);
+  const [repliedShown, setRepliedShown] = useState(200);
 
   // Two-level grouping UI state (keys are prefixed by tab, e.g. "queued:arooj@…").
   const [collapsedSenders, setCollapsedSenders] = useState<Set<string>>(new Set());
@@ -147,12 +154,12 @@ export default function SendingPage() {
 
   const load = useCallback(async () => {
     try {
-      const data = await fetch(`/api/emails/status?recent_limit=${recentShown}&upcoming_limit=${upcomingShown}&followup_limit=${followupsShown}`).then((r) => r.json());
+      const data = await fetch(`/api/emails/status?recent_limit=${recentShown}&upcoming_limit=${upcomingShown}&followup_limit=${followupsShown}&replied_limit=${repliedShown}`).then((r) => r.json());
       setStatus(data);
       setSendTz((prev) => prev || data?.upcoming?.[0]?.tz || data?.recent?.[0]?.tz || "");
     } catch {}
     setLoading(false);
-  }, [recentShown, upcomingShown, followupsShown]);
+  }, [recentShown, upcomingShown, followupsShown, repliedShown]);
 
   useEffect(() => {
     load();
@@ -272,6 +279,8 @@ export default function SendingPage() {
   const recentTotal = status?.recentTotal ?? 0;
   const followupsAll = status?.followups ?? [];
   const followupsTotal = status?.followupsTotal ?? 0;
+  const repliedAll = status?.replied ?? [];
+  const repliedTotal = status?.repliedTotal ?? 0;
 
   // ── Two-level grouped list: sender ("who sent it") → date, with per-sender load more ──
   function GroupedList({ tabKey, items, dateOf, sortWithin, renderRow, emptyText, fetchedCount, total, onLoadServer }: {
@@ -408,21 +417,30 @@ export default function SendingPage() {
           <button onClick={() => openAuthor(e.author_id)} className="truncate text-left hover:text-violet-400 hover:underline">{e.author_name}</button>
           {e.kind === "followup" && <span className="text-[9px] uppercase tracking-wide text-blue-400 border border-blue-500/40 rounded px-1 shrink-0">follow-up</span>}
           {e.replied_at && <span className="text-[9px] uppercase tracking-wide text-violet-400 border border-violet-500/40 rounded px-1 shrink-0">replied</span>}
+          {e.bounced_at && <span className="text-[9px] uppercase tracking-wide text-red-400 border border-red-500/40 rounded px-1 shrink-0">bounced</span>}
+          {e.reply_kind === "auto" && !e.replied_at && !e.bounced_at && <span className="text-[9px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1 shrink-0">auto-reply</span>}
           {e.success_at && <span className="text-[9px] uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded px-1 shrink-0">win</span>}
         </p>
         <p className="text-xs text-muted-foreground truncate">
-          {e.status === "failed" ? <span className="text-red-400">{e.error}</span> : (e.subject || e.publication)}
+          {e.status === "failed" ? <span className="text-red-400">{e.error}</span>
+            : e.bounced_at ? <span className="text-red-400">{e.reply_subject || "Delivery failed — address not found"}</span>
+            : (e.subject || e.publication)}
         </p>
         {e.success_link && <a href={e.success_link} target="_blank" rel="noreferrer" onClick={(ev) => ev.stopPropagation()} className="text-[11px] text-amber-400 hover:underline inline-flex items-center gap-1 truncate max-w-full">coverage: {e.success_link.replace(/^https?:\/\/(www\.)?/, "")}<ExternalLink className="h-2.5 w-2.5 shrink-0" /></a>}
         {e.sent_at && <p className="text-[10px] text-muted-foreground/70 truncate">sent {sentLabel(e.sent_at)}{e.sent_by_email && e.sent_by_email !== e.sender_email ? ` by ${e.sent_by_email}` : ""}</p>}
       </div>
       <div className="flex items-center gap-0.5 shrink-0">
-        {e.status === "sent" && (
+        {e.reply_kind && (
+          <Button variant="ghost" size="sm" className={`h-7 px-2 text-xs ${e.bounced_at ? "text-red-400 hover:text-red-300" : e.replied_at ? "text-violet-400 hover:text-violet-300" : "text-muted-foreground"}`} title={e.bounced_at ? "Read the bounce notice" : "Read their reply"} onClick={() => openReader(e)}>
+            <Reply className="h-3.5 w-3.5 mr-1" />{e.bounced_at ? "Bounce" : e.reply_kind === "auto" ? "Auto" : "Reply"}
+          </Button>
+        )}
+        {e.status === "sent" && !e.bounced_at && (
           e.success_at
             ? <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-amber-400" title="Edit / remove win" onClick={() => openSuccess(e)}><Trophy className="h-3.5 w-3.5" /></Button>
             : <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground hover:text-amber-400" title="Mark as a win (they covered us)" onClick={() => openSuccess(e)}><Trophy className="h-3.5 w-3.5 mr-1" />Win</Button>
         )}
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="Read the email" onClick={() => openReader(e)}>Read</Button>
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" title="Read the sent email" onClick={() => openReader(e)}>Read</Button>
       </div>
     </div>
   );
@@ -470,6 +488,7 @@ export default function SendingPage() {
   // filtered sent list
   const sentFiltered = recentAll.filter((e) =>
     sentFilter === "replied" ? !!e.replied_at
+    : sentFilter === "bounced" ? !!e.bounced_at
     : sentFilter === "wins" ? !!e.success_at
     : sentFilter === "followups" ? e.kind === "followup"
     : true);
@@ -485,6 +504,7 @@ export default function SendingPage() {
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "queued", label: "Queued", count: upcomingTotal },
     { key: "sent", label: "Sent & failed", count: recentTotal },
+    { key: "replied", label: "Replied", count: repliedTotal },
     { key: "followups", label: "Follow-ups", count: followupsTotal },
   ];
 
@@ -580,7 +600,7 @@ export default function SendingPage() {
           <>
             <div className="px-3 py-2 border-b border-border flex items-center gap-1 text-[11px]">
               <span className="text-muted-foreground mr-1">Show:</span>
-              {([["all", "all"], ["replied", "replied"], ["wins", "wins"], ["followups", "followed up"]] as const).map(([f, label]) => (
+              {([["all", "all"], ["replied", "replied"], ["bounced", "bounced"], ["wins", "wins"], ["followups", "followed up"]] as const).map(([f, label]) => (
                 <button key={f} onClick={() => setSentFilter(f)} className={`px-2 py-0.5 rounded-full ${sentFilter === f ? "bg-violet-500/20 text-violet-300" : "text-muted-foreground hover:bg-muted/40"}`}>{label}</button>
               ))}
               <span className="ml-auto text-muted-foreground/60">Pending follow-ups live in the Follow-ups tab.</span>
@@ -591,6 +611,22 @@ export default function SendingPage() {
                 sortWithin={(a, b) => (b.sent_at ?? "").localeCompare(a.sent_at ?? "")}
                 renderRow={sentRow} emptyText="Nothing here yet"
                 fetchedCount={recentAll.length} total={recentTotal} onLoadServer={() => setRecentShown((n) => n + 80)}
+              />
+            </div>
+          </>
+        )}
+
+        {tab === "replied" && (
+          <>
+            <div className="px-4 py-2 text-[11px] text-muted-foreground bg-violet-500/5 border-b border-border">
+              Genuine human replies only — bounces (&ldquo;address not found&rdquo;) and auto-replies are excluded and shown under Sent &amp; failed. Click <span className="text-violet-300">Reply</span> to read what they said.
+            </div>
+            <div className="max-h-[560px] overflow-y-auto">
+              <GroupedList
+                tabKey="replied" items={repliedAll} dateOf={(e) => e.replied_at ?? undefined}
+                sortWithin={(a, b) => (b.replied_at ?? "").localeCompare(a.replied_at ?? "")}
+                renderRow={sentRow} emptyText="No replies yet"
+                fetchedCount={repliedAll.length} total={repliedTotal} onLoadServer={() => setRepliedShown((n) => n + 200)}
               />
             </div>
           </>
@@ -642,8 +678,19 @@ export default function SendingPage() {
             {reading && <p className="text-sm text-muted-foreground">{reading.author_name}{reading.sent_at ? ` · sent ${sentLabel(reading.sent_at)}` : reading.scheduled_at ? ` · sends ${reading.local_label ?? sentLabel(reading.scheduled_at)}` : ""}</p>}
           </SheetHeader>
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {reading?.reply_kind && (
+              <div className={`rounded-md border p-3 space-y-1.5 ${reading.bounced_at ? "border-red-500/40 bg-red-500/5" : reading.replied_at ? "border-violet-500/40 bg-violet-500/5" : "border-border bg-muted/20"}`}>
+                <p className={`text-[11px] font-semibold uppercase tracking-widest ${reading.bounced_at ? "text-red-400" : reading.replied_at ? "text-violet-400" : "text-muted-foreground"}`}>
+                  {reading.bounced_at ? "Bounce notice — address didn't accept mail" : reading.reply_kind === "auto" ? "Automatic reply (not counted as a reply)" : "Their reply"}
+                </p>
+                {reading.reply_from && <p className="text-xs text-muted-foreground">from {reading.reply_from}</p>}
+                {reading.reply_subject && <p className="text-sm font-medium">{reading.reply_subject}</p>}
+                {reading.reply_excerpt && <div className="text-sm whitespace-pre-wrap leading-relaxed pt-1 text-foreground/90">{reading.reply_excerpt}</div>}
+              </div>
+            )}
             {!readContent ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading…</div> : (
               <>
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Your sent email</p>
                 <div><p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Subject</p><p className="text-sm font-medium">{readContent.subject || <span className="text-muted-foreground italic">(none)</span>}</p></div>
                 <div><p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Body</p><div className="text-sm whitespace-pre-wrap leading-relaxed rounded-md border border-border bg-muted/20 p-3">{readContent.body || <span className="text-muted-foreground italic">(empty)</span>}</div></div>
               </>
