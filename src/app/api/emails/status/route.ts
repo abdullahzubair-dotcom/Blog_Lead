@@ -17,9 +17,10 @@ export async function GET(req: NextRequest) {
   const upcomingLimit = Math.min(500, parseInt(sp.get("upcoming_limit") ?? "60", 10) || 60);
   const followupLimit = Math.min(500, parseInt(sp.get("followup_limit") ?? "200", 10) || 200);
   const repliedLimit = Math.min(500, parseInt(sp.get("replied_limit") ?? "200", 10) || 200);
+  const winsLimit = Math.min(500, parseInt(sp.get("wins_limit") ?? "200", 10) || 200);
 
-  const [{ counts, upcoming, upcomingTotal, recent, recentTotal, followups, followupsTotal, replied, repliedTotal }, sharedSenders] = await Promise.all([
-    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit, followupLimit, repliedLimit }),
+  const [{ counts, upcoming, upcomingTotal, recent, recentTotal, followups, followupsTotal, replied, repliedTotal, wins, winsTotal }, sharedSenders] = await Promise.all([
+    getSendingStatus({ workflowId, recentOffset, recentLimit, upcomingOffset, upcomingLimit, followupLimit, repliedLimit, winsLimit }),
     getSharedSenders(),
   ]);
   const sharedLabelByEmail = new Map(sharedSenders.map((s) => [s.email, s.label]));
@@ -74,5 +75,6 @@ export async function GET(req: NextRequest) {
     recent: recent.map(enrich), recentTotal,
     followups: followups.map(enrich), followupsTotal,
     replied: replied.map(enrich), repliedTotal,
+    wins: wins.map(enrich), winsTotal,
   });
 }

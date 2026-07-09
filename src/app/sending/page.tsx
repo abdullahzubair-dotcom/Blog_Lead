@@ -56,9 +56,10 @@ interface Status {
   recent: StatusEmail[]; recentTotal: number;
   followups: StatusEmail[]; followupsTotal: number;
   replied: StatusEmail[]; repliedTotal: number;
+  wins: StatusEmail[]; winsTotal: number;
 }
 
-type Tab = "queued" | "sent" | "replied" | "followups";
+type Tab = "queued" | "sent" | "replied" | "followups" | "wins";
 
 function Stat({ label, value, color, suffix, title, sub }: { label: string; value: number; color: string; suffix?: string; title?: string; sub?: string }) {
   return (
@@ -99,6 +100,7 @@ export default function SendingPage() {
   const [recentShown, setRecentShown] = useState(80);
   const [followupsShown, setFollowupsShown] = useState(200);
   const [repliedShown, setRepliedShown] = useState(200);
+  const [winsShown, setWinsShown] = useState(200);
 
   // Two-level grouping UI state (keys are prefixed by tab, e.g. "queued:arooj@…").
   const [collapsedSenders, setCollapsedSenders] = useState<Set<string>>(new Set());
@@ -154,12 +156,12 @@ export default function SendingPage() {
 
   const load = useCallback(async () => {
     try {
-      const data = await fetch(`/api/emails/status?recent_limit=${recentShown}&upcoming_limit=${upcomingShown}&followup_limit=${followupsShown}&replied_limit=${repliedShown}`).then((r) => r.json());
+      const data = await fetch(`/api/emails/status?recent_limit=${recentShown}&upcoming_limit=${upcomingShown}&followup_limit=${followupsShown}&replied_limit=${repliedShown}&wins_limit=${winsShown}`).then((r) => r.json());
       setStatus(data);
       setSendTz((prev) => prev || data?.upcoming?.[0]?.tz || data?.recent?.[0]?.tz || "");
     } catch {}
     setLoading(false);
-  }, [recentShown, upcomingShown, followupsShown, repliedShown]);
+  }, [recentShown, upcomingShown, followupsShown, repliedShown, winsShown]);
 
   useEffect(() => {
     load();
@@ -281,6 +283,8 @@ export default function SendingPage() {
   const followupsTotal = status?.followupsTotal ?? 0;
   const repliedAll = status?.replied ?? [];
   const repliedTotal = status?.repliedTotal ?? 0;
+  const winsAll = status?.wins ?? [];
+  const winsTotal = status?.winsTotal ?? 0;
 
   // ── Two-level grouped list: sender ("who sent it") → date, with per-sender load more ──
   function GroupedList({ tabKey, items, dateOf, sortWithin, renderRow, emptyText, fetchedCount, total, onLoadServer }: {
@@ -506,6 +510,7 @@ export default function SendingPage() {
     { key: "sent", label: "Sent & failed", count: recentTotal },
     { key: "replied", label: "Replied", count: repliedTotal },
     { key: "followups", label: "Follow-ups", count: followupsTotal },
+    { key: "wins", label: "Wins", count: winsTotal },
   ];
 
   return (
@@ -642,6 +647,22 @@ export default function SendingPage() {
                 tabKey="followups" items={followupsAll} dateOf={(e) => e.scheduled_at ?? e.sent_at}
                 sortWithin={fuSort} renderRow={followupRow} emptyText="No follow-ups yet — they're scheduled automatically 2 days after an unanswered send."
                 fetchedCount={followupsAll.length} total={followupsTotal} onLoadServer={() => setFollowupsShown((n) => n + 200)}
+              />
+            </div>
+          </>
+        )}
+
+        {tab === "wins" && (
+          <>
+            <div className="px-4 py-2 text-[11px] text-muted-foreground bg-amber-500/5 border-b border-border">
+              Coverage secured — sends you marked as a win. Click the 🏆 to edit the coverage link or notes.
+            </div>
+            <div className="max-h-[560px] overflow-y-auto">
+              <GroupedList
+                tabKey="wins" items={winsAll} dateOf={(e) => e.success_at ?? undefined}
+                sortWithin={(a, b) => (b.success_at ?? "").localeCompare(a.success_at ?? "")}
+                renderRow={sentRow} emptyText="No wins logged yet — mark a reply as a win with the 🏆 button."
+                fetchedCount={winsAll.length} total={winsTotal} onLoadServer={() => setWinsShown((n) => n + 200)}
               />
             </div>
           </>

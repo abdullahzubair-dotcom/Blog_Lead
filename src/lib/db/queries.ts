@@ -1846,12 +1846,14 @@ export async function getSendingStatus(opts: {
   recentOffset?: number; recentLimit?: number;
   followupOffset?: number; followupLimit?: number;
   repliedOffset?: number; repliedLimit?: number;
+  winsOffset?: number; winsLimit?: number;
 } = {}): Promise<{
   counts: Record<string, number>;
   upcoming: any[]; upcomingTotal: number;
   recent: any[]; recentTotal: number;
   followups: any[]; followupsTotal: number;
   replied: any[]; repliedTotal: number;
+  wins: any[]; winsTotal: number;
 }> {
   const { workflowId } = opts;
   const upcomingOffset = opts.upcomingOffset ?? 0;
@@ -1862,6 +1864,8 @@ export async function getSendingStatus(opts: {
   const followupLimit = opts.followupLimit ?? 200;
   const repliedOffset = opts.repliedOffset ?? 0;
   const repliedLimit = opts.repliedLimit ?? 200;
+  const winsOffset = opts.winsOffset ?? 0;
+  const winsLimit = opts.winsLimit ?? 200;
 
   const scoped = (q: any) => (workflowId ? q.eq("workflow_id", workflowId) : q);
   const countOf = (build: (q: any) => any) =>
@@ -1874,7 +1878,7 @@ export async function getSendingStatus(opts: {
   const [
     cSentInitial, cFailedInitial, cReplied, cBounced, cSuccess,
     queuedTotal, recentTotal, followupsTotal,
-    { data: upcoming }, { data: recent }, { data: followups }, { data: replied },
+    { data: upcoming }, { data: recent }, { data: followups }, { data: replied }, { data: wins },
   ] = await Promise.all([
     countOf((q) => q.eq("status", "sent").eq("kind", "initial")),
     countOf((q) => q.eq("status", "failed").eq("kind", "initial")),
@@ -1901,6 +1905,10 @@ export async function getSendingStatus(opts: {
     scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
       .not("replied_at", "is", null)
       .order("replied_at", { ascending: false }).range(repliedOffset, repliedOffset + repliedLimit - 1),
+    // Wins — coverage secured, most recent first.
+    scoped(supabaseAdmin.from("outreach_emails").select(SEND_COLS))
+      .not("success_at", "is", null)
+      .order("success_at", { ascending: false }).range(winsOffset, winsOffset + winsLimit - 1),
   ]);
 
   const counts: Record<string, number> = {
@@ -1914,6 +1922,7 @@ export async function getSendingStatus(opts: {
     recent: recent ?? [], recentTotal,
     followups: followups ?? [], followupsTotal,
     replied: replied ?? [], repliedTotal: cReplied,
+    wins: wins ?? [], winsTotal: cSuccess,
   };
 }
 
