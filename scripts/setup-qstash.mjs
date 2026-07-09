@@ -21,23 +21,27 @@ const secret = process.env.CRON_SECRET;
 if (!token) { console.error("✗ QSTASH_TOKEN missing in .env.local (console.upstash.com → QStash)"); process.exit(1); }
 if (!base) { console.error("✗ Pass your deployed base URL: node scripts/setup-qstash.mjs https://your-app.vercel.app"); process.exit(1); }
 
-const destination = `${base.replace(/\/$/, "")}/api/emails/process`;
+const root = base.replace(/\/$/, "");
 const client = new Client({ token });
+const authHeaders = secret ? { Authorization: `Bearer ${secret}` } : {};
 
-// Remove any existing schedules pointing at this destination (idempotent re-run).
-const existing = await client.schedules.list().catch(() => []);
-for (const s of existing) {
-  if (s.destination === destination) { await client.schedules.delete(s.scheduleId); console.log(`· removed old schedule ${s.scheduleId}`); }
+// Two schedules, both on QStash (reliable delivery) rather than Vercel Hobby cron, which is
+// best-effort and was silently skipping the daily run:
+//   1. send-processor every 30 min (timezone-accurate email delivery + reply/follow-up sweep)
+//   2. daily fan-out at 08:00 UTC (broken-link audit + author-watch notifications)
+const schedules = [
+  { path: "/api/emails/process", cron: "*/30 * * * *", desc: "send-processor every 30 min" },
+  { path: "/api/cron/daily", cron: "0 8 * * *", desc: "daily audit + notifications at 08:00 UTC" },
+];
+
+for (const { path, cron, desc } of schedules) {
+  const destination = `${root}${path}`;
+  // Remove any existing schedule for this destination first (idempotent re-run).
+  const existing = await client.schedules.list().catch(() => []);
+  for (const s of existing) {
+    if (s.destination === destination) { await client.schedules.delete(s.scheduleId); console.log(`· removed old schedule ${s.scheduleId}`); }
+  }
+  const res = await client.schedules.create({ destination, cron, method: "POST", headers: authHeaders });
+  console.log(`✓ ${res.scheduleId} — POST ${destination} (${desc})`);
 }
-
-const res = await client.schedules.create({
-  destination,
-  cron: "*/30 * * * *", // every 30 minutes
-  method: "POST",
-  // Forwarded to the endpoint as its Authorization header → passes the CRON_SECRET check.
-  headers: secret ? { Authorization: `Bearer ${secret}` } : {},
-});
-
-console.log(`✓ QStash schedule created: ${res.scheduleId}`);
-console.log(`  → POST ${destination} every 30 min`);
-console.log(secret ? "  → forwarding Authorization: Bearer <CRON_SECRET>" : "  ⚠ no CRON_SECRET set — endpoint must be open");
+console.log(secret ? "  → forwarding Authorization: Bearer <CRON_SECRET>" : "  ⚠ no CRON_SECRET set — endpoints must be open");
