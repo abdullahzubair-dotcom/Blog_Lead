@@ -1327,27 +1327,27 @@ export async function updateOutreachEmail(id: string, data: {
 // Outstanding sent emails (last N days, no reply yet) grouped by the mailbox that sent
 // them, with the recipient + subject needed for reply matching. sender_email "" = legacy
 // env-sender sends (checked against the env SMTP account).
-export async function getOutstandingSentForReplyCheck(days = 30, opts: { includeReplied?: boolean } = {}): Promise<Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
+export async function getOutstandingSentForReplyCheck(days = 30, opts: { includeReplied?: boolean } = {}): Promise<Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
   const since = new Date(Date.now() - days * 86400_000).toISOString();
   // Normal sweep skips already-replied and already-bounced sends. A rescan (includeReplied)
   // re-examines everything so mis-classified past "replies" (bounces) get corrected.
   let q = supabaseAdmin
     .from("outreach_emails")
-    .select("id, sender_email, message_id, subject, sent_at, author:authors(contacts(type, value))")
+    .select("id, author_id, sender_email, message_id, subject, sent_at, author:authors(contacts(type, value))")
     .eq("status", "sent")
     .is("bounced_at", null)
     .gte("sent_at", since)
     .limit(2000);
   if (!opts.includeReplied) q = q.is("replied_at", null);
   const { data } = await q;
-  const out = new Map<string, Array<{ id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>();
+  const out = new Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>();
   for (const e of data ?? []) {
     const mailto = ((e as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
     const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
     if (!recipient) continue;
     const key = (e as any).sender_email ?? "";
     if (!out.has(key)) out.set(key, []);
-    out.get(key)!.push({ id: e.id, message_id: (e as any).message_id ?? null, recipient, subject: e.subject ?? "", sent_at: (e as any).sent_at });
+    out.get(key)!.push({ id: e.id, author_id: (e as any).author_id, message_id: (e as any).message_id ?? null, recipient, subject: e.subject ?? "", sent_at: (e as any).sent_at });
   }
   return out;
 }

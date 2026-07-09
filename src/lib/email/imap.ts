@@ -7,7 +7,7 @@ import { ImapFlow } from "imapflow";
 import { redis } from "@/lib/redis";
 import { decryptSecret } from "@/lib/crypto";
 import {
-  getUserAppPasswordEnc, getOutstandingSentForReplyCheck, updateOutreachEmail, markRepliesChecked,
+  getUserAppPasswordEnc, getOutstandingSentForReplyCheck, updateOutreachEmail, markRepliesChecked, setAuthorDiscarded,
 } from "@/lib/db/queries";
 
 const normId = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
@@ -17,6 +17,7 @@ export type ReplyKind = "reply" | "bounce" | "auto";
 
 export interface OutstandingSent {
   id: string;
+  author_id: string;
   message_id: string | null;
   recipient: string;
   subject: string;
@@ -150,7 +151,7 @@ async function shouldCheck(account: string, minMinutes: number): Promise<boolean
   return set === "OK"; // only the first caller within the window proceeds
 }
 
-export interface ReplyDetectionResult { accountsChecked: number; repliesFound: number; bounces: number; autoReplies: number; errors: string[] }
+export interface ReplyDetectionResult { accountsChecked: number; repliesFound: number; bounces: number; autoReplies: number; discarded: number; errors: string[] }
 
 // Sweep every sender mailbox and classify inbound matches. Only genuine human replies set
 // replied_at; bounces set bounced_at (and skip follow-ups); auto-replies are recorded but
@@ -159,7 +160,7 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
   const backfillDays = opts.backfillDays ?? 30;
   const minMinutes = opts.minMinutesBetween ?? 15;
   const bySender = await getOutstandingSentForReplyCheck(backfillDays, { includeReplied: opts.rescanAll });
-  const result: ReplyDetectionResult = { accountsChecked: 0, repliesFound: 0, bounces: 0, autoReplies: 0, errors: [] };
+  const result: ReplyDetectionResult = { accountsChecked: 0, repliesFound: 0, bounces: 0, autoReplies: 0, discarded: 0, errors: [] };
 
   const nowIso = new Date().toISOString();
   for (const [sender, list] of bySender) {
@@ -172,6 +173,7 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
 
     try {
       result.accountsChecked++;
+      const authorById = new Map(list.map((o) => [o.id, o.author_id]));
       const matches = await detectReplies(account, pass, list);
       for (const [id, m] of matches) {
         const meta = { reply_kind: m.kind, reply_from: m.from || null, reply_subject: m.subject || null, reply_excerpt: m.excerpt || null };
@@ -180,9 +182,12 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
           result.repliesFound++;
         } else if (m.kind === "bounce") {
           // Not a reply — the address bounced. Clear any bogus reply mark, record the bounce,
-          // and skip follow-ups to a dead address.
+          // skip follow-ups to a dead address, and discard the author (bad/wrong email) so
+          // they drop out of every workflow.
           await updateOutreachEmail(id, { ...meta, replied_at: null, bounced_at: nowIso, followup_skipped: true });
           result.bounces++;
+          const authorId = authorById.get(id);
+          if (authorId) { try { await setAuthorDiscarded(authorId, true); result.discarded++; } catch { /* non-fatal */ } }
         } else {
           await updateOutreachEmail(id, { ...meta, replied_at: null });
           result.autoReplies++;
