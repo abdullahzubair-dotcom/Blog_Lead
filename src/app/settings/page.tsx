@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { UserEmailConfigCard } from "@/components/settings/UserEmailConfig";
+import { TavilyKeyManager } from "@/components/settings/TavilyKeyManager";
 
 interface ConfigItem {
   key: string;
@@ -40,6 +41,9 @@ export default function SettingsPage() {
 
       {/* Per-user sending identity (each user sends from their own Gmail) */}
       <UserEmailConfigCard />
+
+      {/* Rotating Tavily key pool — add many keys; auto-rolls over on quota */}
+      <TavilyKeyManager />
 
       <p className="text-muted-foreground text-sm">
         API keys and configuration are managed via <code className="bg-muted px-1 rounded text-violet-500">.env.local</code>.

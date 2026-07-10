@@ -40,21 +40,24 @@ export async function generateDiscoveryQueries(seeds: SeedTool[], usedQueries: s
       ? customKeywords.join(", ")
       : topics.slice(0, 10).join(", ");
 
-    const raw = await askClaude(`You are helping a generative AI company find editorial writers and bloggers to pitch for coverage.
+    const raw = await askClaude(`You are helping a generative AI company find NEW editorial writers and bloggers to pitch for coverage. We have already scraped the obvious "best AI video generator" mega-roundups a hundred times — those converge on the same 10 pages. Your job is to reach LONG-TAIL articles by writers we haven't found yet.
 
-Generate exactly 30 FRESH, DIVERSE Google/web search queries that would find human-written editorial articles about generative AI tools.
+Generate exactly 30 FRESH, DIVERSE web search queries that surface human-written editorial articles about generative AI tools.
 Tools to target: ${toolList}
 Topics/Keywords: ${topicList || "generative ai, ai art, ai video, ai image generation, text to image, llm tools"}
 
 Requirements:
-- EDITORIAL articles only (reviews, comparisons, roundups, tutorials, "I tested X") — NOT product pages or press releases
-- Every query MUST be directly related to the specified Topics/Keywords — stay focused on those themes
-- Mix single-tool and multi-tool queries
-- Include year-based queries (2024, 2025)
-- Include "vs", "alternative to", "review", "best", "top" query patterns
-- Include niche angles: specific use-cases, creator workflows, industry verticals
-- Each query on its own line, no numbering, no commentary
-${usedSample ? `\nAVOID repeating or paraphrasing these already-used queries:\n${usedSample}` : ""}
+- EDITORIAL articles only (reviews, comparisons, roundups, tutorials, "I tested X", opinion, case studies) — NOT product pages or press releases.
+- Stay related to the Topics/Keywords, but MAXIMIZE diversity of angle so we hit different writers/publications. Deliberately spread across these dimensions:
+  • Industry verticals: marketing/advertising, ecommerce, filmmaking, photography, game/3D art, education, real estate, social media, small business, agencies.
+  • Job roles searching: "for marketers", "for content creators", "for designers", "for video editors", "for startups", "for solopreneurs".
+  • Formats/platforms: substack, medium, personal blog, newsletter, "how I use", workflow write-ups, tutorials, case study, hands-on.
+  • Regions/English variants: US, UK, India, Australia, Southeast Asia.
+  • Time: include 2025 and 2026 variants.
+- Mix single-tool and multi-tool and NO-tool (topic-only) queries. Include some "site:substack.com" / "site:medium.com" style queries.
+- Vary the verbs: review, compared, I tried, hands-on, guide, workflow, why I switched, honest review, is it worth it.
+- Each query on its own line, no numbering, no commentary, under 90 chars.
+${usedSample ? `\nAVOID repeating or paraphrasing these already-used queries (find genuinely new angles):\n${usedSample}` : ""}
 
 Output ONLY the 30 queries, one per line.`);
 
@@ -81,20 +84,21 @@ Output ONLY the 30 queries, one per line.`);
 }
 
 function fallbackQueries(tools: string[]): string[] {
+  // Spread across verticals/roles/formats/regions so the fallback (used when the LLM is down)
+  // still reaches diverse writers rather than the same saturated roundups.
   const base: string[] = [
-    "best generative ai tools 2025",
-    "ai image generator comparison review",
-    "best ai video generator roundup",
-    "top ai art tools for creators 2025",
-    "generative ai tools for designers",
-    "ai image generation tools I tested",
-    "best text to image ai 2025",
-    "ai video tools comparison 2025",
-    "generative ai workflow tutorial",
-    "best ai tools for content creators",
+    "best generative ai tools 2026", "ai image generator comparison review", "best ai video generator roundup 2026",
+    "top ai art tools for creators 2026", "generative ai tools for designers", "ai image generation tools I tested",
+    "best text to image ai 2026", "ai video tools comparison 2026", "generative ai workflow tutorial",
+    "best ai tools for content creators", "ai video tools for marketers", "ai image tools for ecommerce",
+    "ai tools for social media content", "ai video for youtube creators", "ai design tools for small business",
+    "ai tools for filmmakers", "ai art workflow substack", "how I use ai video tools medium",
+    "ai marketing tools case study", "best ai ad creative tools", "ai tools for agencies 2026",
+    "hands on ai video generator review", "is ai video worth it honest review", "ai image generator for photographers",
+    "ai tools for indie game art", "generative ai for video editors",
   ];
-  for (const t of tools.slice(0, 12)) {
-    base.push(t, `${t} review`, `${t} vs`, `${t} alternative`, `best ${t} prompts`);
+  for (const t of tools.slice(0, 14)) {
+    base.push(`${t} review`, `${t} vs`, `${t} alternative`, `I tried ${t}`, `${t} for marketers`, `${t} tutorial`);
   }
   return dedupe(base);
 }

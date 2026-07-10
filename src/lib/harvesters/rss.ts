@@ -153,7 +153,7 @@ export const rssHarvester = {
   name: "rss" as const,
   async run(query: string, opts?: { domains?: string[] }): Promise<RawHit[]> {
     const domains = opts?.domains ?? [];
-    const BATCH = 10; // process 10 domains concurrently
+    const BATCH = 20; // process 20 domains concurrently (I/O-bound; keeps a big list in budget)
     const results: RawHit[] = [];
 
     for (let i = 0; i < domains.length; i += BATCH) {

@@ -26,6 +26,34 @@ function sanitize(text: string): string {
     .trim();
 }
 
+// Scraped page titles arrive with HTML entities, a trailing " | Site" / " - Site" suffix, and
+// sometimes mid-title truncation ("... Pika &"). {{article_title}} goes straight into subject
+// lines, so clean it: decode entities, drop the site suffix, trim dangling junk, cap length.
+function decodeEntities(s: string): string {
+  return (s ?? "")
+    .replace(/&#0*39;|&#x0*27;|&apos;|&lsquo;|&rsquo;|&#8216;|&#8217;/gi, "'")
+    .replace(/&quot;|&#0*34;|&ldquo;|&rdquo;|&#8220;|&#8221;/gi, '"')
+    .replace(/&amp;/gi, "&")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCodePoint(parseInt(n, 10)); } catch { return ""; } })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => { try { return String.fromCodePoint(parseInt(n, 16)); } catch { return ""; } });
+}
+function cleanTitle(raw: string, maxLen = 90): string {
+  let t = decodeEntities((raw ?? "").replace(/\s+/g, " ").trim());
+  // Drop the site name after the last pipe: "Title | Section | Site" → "Title | Section".
+  if (t.includes("|")) { const parts = t.split("|"); if (parts.length > 1) t = parts.slice(0, -1).join("|").trim(); }
+  // Drop a trailing " - Site" / " — Site" when the tail is a short, site-like fragment
+  // (no sentence punctuation), e.g. "... by Michelle DeLateur - ProVideo Coalition".
+  t = t.replace(/\s+[–—-]\s+([^–—-]{2,38})$/, (m, tail) => (/[.?!:]/.test(tail) ? m : "")).trim();
+  if (t.length > maxLen) t = t.slice(0, maxLen).replace(/\s+\S*$/, "").trim();
+  // Strip dangling conjunctions/punctuation left by upstream truncation or the length cap
+  // ("... Pika &", "... Millions of").
+  const trimTail = (x: string) => x.replace(/[\s,:;&/+\-]+$/, "").replace(/\s+(and|or|the|a|an|with|to|of|for|in|on|by|vs\.?)$/i, "").trim();
+  t = trimTail(trimTail(t));
+  return t;
+}
+
 // Free-mail hosts aren't a "publication" — "your readers at gmail.com" reads wrong.
 const FREE_MAIL = new Set(["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "protonmail.com", "aol.com", "me.com", "live.com", "msn.com"]);
 function cleanPubName(pub: string): string {
@@ -40,7 +68,7 @@ function hasPlaceholder(s: string): boolean {
 async function generateOpener(authorName: string, pubName: string, articles: OpenerArticle[], tools: string[], guidance?: string): Promise<string> {
   const sorted = [...articles].sort((a, b) => (b.published_at ?? "").localeCompare(a.published_at ?? ""));
   const lead = sorted[0];
-  const leadTitle = (lead?.title ?? "").trim();
+  const leadTitle = cleanTitle(lead?.title ?? "");
   const leadDate = fmtDate(lead?.published_at);
   const leadTopic = (lead?.excerpt ?? lead?.readability_text_excerpt ?? "").slice(0, 300).trim();
   const toolList = tools.slice(0, 3).join(", ");
@@ -131,7 +159,7 @@ async function runGeneration(workflowId: string, templateId?: string) {
         const vars: Record<string, string> = {
           author_name: author.full_name,
           pub_name: pubName,
-          article_title: firstArticle?.title ?? "",
+          article_title: cleanTitle(firstArticle?.title ?? ""),
           article_date: firstArticle?.published_at?.slice(0, 10) ?? "",
           tool_mentioned: tools[0] ?? "AI tools",
           custom_line: opener,

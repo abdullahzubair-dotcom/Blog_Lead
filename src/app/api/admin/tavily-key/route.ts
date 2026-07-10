@@ -1,29 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTavilyUsage, setTavilyKeyOverride, clearTavilyKeyOverride, hasTavilyKeyOverride } from "@/lib/search/tavilyUsage";
+import { getTavilyUsage, listTavilyKeys, addTavilyKey, removeTavilyKey } from "@/lib/search/tavilyUsage";
 
-// GET — whether an override key is currently set (never returns the key itself) + live usage.
+// GET — the rotating key pool (masked, never the raw keys) + live usage.
 export async function GET() {
-  const [override, usage] = await Promise.all([hasTavilyKeyOverride(), getTavilyUsage()]);
-  return NextResponse.json({ hasOverride: override, usage });
+  const [keys, usage] = await Promise.all([listTavilyKeys(), getTavilyUsage()]);
+  return NextResponse.json({ keys, usage });
 }
 
-// POST — swap in a new Tavily key at runtime, no redeploy needed. Resets the usage counter
-// since a new/different key starts its own quota.
+// POST — add one or many Tavily keys to the pool. Accepts { key, label? } or { keys: "a\nb\nc" }.
 export async function POST(req: NextRequest) {
-  const { key } = await req.json().catch(() => ({}));
-  if (typeof key !== "string" || !key.trim()) {
-    return NextResponse.json({ error: "key required" }, { status: 400 });
-  }
+  const body = await req.json().catch(() => ({}));
+  const raw: string = typeof body.keys === "string" ? body.keys : (typeof body.key === "string" ? body.key : "");
+  const label: string | undefined = typeof body.label === "string" ? body.label : undefined;
+  const parts = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return NextResponse.json({ error: "key required" }, { status: 400 });
   try {
-    await setTavilyKeyOverride(key.trim());
-    return NextResponse.json({ ok: true });
+    for (const k of parts) await addTavilyKey(k, parts.length === 1 ? label : undefined);
+    return NextResponse.json({ ok: true, added: parts.length, keys: await listTavilyKeys() });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-// DELETE — revert to the TAVILY_API_KEY env var.
-export async function DELETE() {
-  await clearTavilyKeyOverride();
-  return NextResponse.json({ ok: true });
+// DELETE ?id= — remove one key from the pool.
+export async function DELETE(req: NextRequest) {
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  await removeTavilyKey(id);
+  return NextResponse.json({ ok: true, keys: await listTavilyKeys() });
 }

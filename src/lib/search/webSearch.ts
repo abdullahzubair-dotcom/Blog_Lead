@@ -27,23 +27,37 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
   const fail = (res: Response) => onError?.(`${provider} HTTP ${res.status}`);
   try {
     if (provider === "tavily") {
-      const { trackTavilyCall, flagTavilyError, getTavilyKey } = await import("./tavilyUsage");
-      void trackTavilyCall(); // count toward the monthly-usage banner
-      // An admin-set override (changeable in-app, no redeploy) takes priority over the env var.
-      const apiKey = await getTavilyKey();
-      const res = await fetch("https://api.tavily.com/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: "basic" }),
-        signal: sig,
-      });
-      if (!res.ok) {
-        // 401 bad key, 429 rate-limited, 432/402 quota exhausted → surface in the banner.
+      const { trackTavilyCall, flagTavilyError, getActiveTavilyKey, markTavilyKeyExhausted } = await import("./tavilyUsage");
+      // Quota-exhaustion statuses → this key is spent for the month; roll to the next in the pool.
+      const QUOTA = new Set([402, 403, 429, 432]);
+      // Try successive keys from the pool until one works or we run out (cap attempts so a
+      // pool of dead keys can't loop forever).
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const active = await getActiveTavilyKey();
+        if (!active) { onError?.("no Tavily key available (pool empty / all exhausted)"); return []; }
+        void trackTavilyCall(); // count toward the monthly-usage banner
+        const res = await fetch("https://api.tavily.com/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: active.key, query, max_results: count, search_depth: "basic" }),
+          signal: sig,
+        });
+        if (res.ok) {
+          const d = await res.json();
+          return (d.results ?? []).map((r: any) => ({ url: r.url, title: r.title ?? "", snippet: (r.content ?? "").slice(0, 300) })).filter((h: SearchHit) => h.url?.startsWith("http"));
+        }
+        if (QUOTA.has(res.status) && active.id) {
+          // Pool key hit its quota — mark it exhausted for the month and try the next one.
+          await markTavilyKeyExhausted(active.id);
+          onError?.(`Tavily key ${active.id} exhausted (HTTP ${res.status}) — rotating to next`);
+          continue;
+        }
+        // Non-quota error (e.g. 401 bad key with no id, 5xx) → surface and stop.
         if ([401, 402, 403, 429, 432].includes(res.status)) void flagTavilyError(`HTTP ${res.status}`);
         fail(res); return [];
       }
-      const d = await res.json();
-      return (d.results ?? []).map((r: any) => ({ url: r.url, title: r.title ?? "", snippet: (r.content ?? "").slice(0, 300) })).filter((h: SearchHit) => h.url?.startsWith("http"));
+      onError?.("Tavily: all keys exhausted");
+      return [];
     }
 
     if (provider === "google") {

@@ -137,8 +137,19 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     if (harvesterMap.rss && !resume?.rssComplete) {
       const rssCfg = enabledHarvesters.find((h) => h.name === "rss");
       const rssDomains = (rssCfg?.config?.domains as string[] | undefined) ?? SEED_DOMAINS;
-      const domainsToFetch = rssDomains;
-      harvLog("rss", `Fetching feeds from ${domainsToFetch.length} domains`);
+      // Rotate through a bounded window each run so a large domain list stays within the
+      // serverless budget while every domain gets covered over successive daily runs (RSS is a
+      // freshness source — recent items — so cycling the window is exactly what we want).
+      const RSS_WINDOW = 70;
+      const domainsToFetch = rssDomains.length <= RSS_WINDOW
+        ? rssDomains
+        : (() => {
+            const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400_000);
+            const start = (dayOfYear * RSS_WINDOW) % rssDomains.length;
+            const rotated = [...rssDomains.slice(start), ...rssDomains.slice(0, start)];
+            return rotated.slice(0, RSS_WINDOW);
+          })();
+      harvLog("rss", `Fetching feeds from ${domainsToFetch.length} of ${rssDomains.length} domains (rotating window)`);
       queue.add(async () => {
         if (signal.aborted) return;
         const rawHits = await rssHarvester.run("ai", { domains: domainsToFetch }).catch((e) => {
@@ -211,7 +222,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     const redditCfg = enabledHarvesters.find((h) => h.name === "reddit");
     const configuredSubs = (redditCfg?.config?.subreddits as string[] | undefined) ?? [];
-    const wpDomains = SEED_DOMAINS.slice(0, 15);
+    const wpDomains = SEED_DOMAINS.slice(0, 30);
 
     // Counters per harvester (persist across rounds)
     let gdeltTotal = 0, hnTotal = 0, redditTotal = 0, wpTotal = 0, braveTotal = 0;
