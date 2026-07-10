@@ -2,6 +2,8 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { runDiscoveryPipeline } from "@/lib/pipeline/run";
 import { getCampaign, updateCampaign } from "@/lib/db/queries";
 import { findLatestCheckpoint } from "@/lib/pipeline/checkpoint";
+import { supabaseAdmin } from "@/lib/db/supabase";
+import { acquireDiscoveryLock, refreshDiscoveryLock } from "@/lib/redis";
 
 export const maxDuration = 300; // 5 minutes on Vercel
 
@@ -12,14 +14,37 @@ export async function POST(req: NextRequest) {
   let seedWriter: { name?: string; articleUrl?: string } | undefined;
   let resume: { usedQueries: string[]; round: number; rssComplete: boolean; discoveryDone?: boolean; oldRunId?: string } | undefined;
 
-  // Resume mode — load checkpoint and continue from where we left off
+  // Resume mode — load checkpoint and continue from where we left off.
   if (body.resume === true) {
     const cp = await findLatestCheckpoint();
     if (cp) {
       resume = { usedQueries: cp.usedQueries, round: cp.round, rssComplete: cp.rssComplete, discoveryDone: cp.discoveryDone, oldRunId: cp.runId };
       if (!campaignId && cp.campaignId) campaignId = cp.campaignId;
       if (!customKeywords && cp.customKeywords) customKeywords = cp.customKeywords;
+    } else {
+      // Checkpoint missing (evicted / a chunk was killed before it re-saved). CRITICAL: never
+      // fall back to a fresh full run here — that re-harvests RSS and reprocesses from zero
+      // (the "restarts everything mid-run" bug). If there's still an unprocessed backlog,
+      // resume in processing-only mode (skip RSS + the query loop) to finish it; otherwise
+      // there's nothing to do.
+      const { count } = await supabaseAdmin.from("discovery_hits").select("id", { count: "exact", head: true }).eq("processed", false);
+      if ((count ?? 0) > 0) {
+        resume = { usedQueries: [], round: 99, rssComplete: true, discoveryDone: true };
+      } else {
+        return NextResponse.json({ started: false, reason: "no checkpoint and no pending work to resume" });
+      }
     }
+  }
+
+  // HARD global lock: only one discovery runs at a time, across every instance and user. A
+  // FRESH start must take the lock (NX) or it's refused — no matter who/where triggers it.
+  // Resume continuations don't take the lock (the run already holds it); they just extend it
+  // so the hand-off gap between chunks doesn't let a duplicate slip in.
+  if (!resume) {
+    const got = await acquireDiscoveryLock(`fresh-${Date.now()}`);
+    if (!got) return NextResponse.json({ started: false, alreadyRunning: true, reason: "A discovery is already running. Only one can run at a time." });
+  } else {
+    await refreshDiscoveryLock(`resume-${Date.now()}`);
   }
 
   if (campaignId && !resume) {

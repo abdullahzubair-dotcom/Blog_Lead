@@ -38,6 +38,35 @@ export async function releaseLock(key: string, token: string): Promise<void> {
   await r.eval(lua, [key], [token]).catch(() => {});
 }
 
+// ─── Global discovery lock (one discovery run at a time, cross-instance/cross-user) ──
+// A discovery run spans multiple serverless chunks. The lock is taken by the FRESH start,
+// refreshed by the running pipeline's heartbeat (and by each resume chunk), and released only
+// when the whole run completes/stops. TTL > one chunk's hard limit + the QStash hand-off gap,
+// so it survives between chunks but auto-expires if the process dies (no permanent lock-out).
+const DISCOVERY_LOCK = "discovery:lock";
+const DISCOVERY_LOCK_TTL = 330; // seconds
+
+export async function acquireDiscoveryLock(holder: string): Promise<boolean> {
+  const r = redis();
+  if (!r) return true; // local dev = single instance
+  return (await r.set(DISCOVERY_LOCK, holder, { nx: true, ex: DISCOVERY_LOCK_TTL })) === "OK";
+}
+export async function refreshDiscoveryLock(holder: string): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  await r.set(DISCOVERY_LOCK, holder, { ex: DISCOVERY_LOCK_TTL }).catch(() => {});
+}
+export async function releaseDiscoveryLock(): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  await r.del(DISCOVERY_LOCK).catch(() => {});
+}
+export async function isDiscoveryLocked(): Promise<boolean> {
+  const r = redis();
+  if (!r) return false;
+  return !!(await r.get(DISCOVERY_LOCK).catch(() => null));
+}
+
 // ─── Daily-cap counter (per config, per UTC day) ────────────────────────────────
 // Returns the new count after incrementing; the key auto-expires after 48h.
 export async function incrDailyCount(configId: string, day: string, by = 1): Promise<number> {

@@ -34,6 +34,7 @@ import { runLearningPhase, getPromotedLearnedDomains } from "@/lib/learn";
 import { generateDiscoveryQueries } from "@/lib/pipeline/queries";
 import { resolveAuthorSeed, harvestAuthorArchive } from "@/lib/pipeline/authorSeed";
 import { createPipelineController, clearStop, isStopRequested } from "@/lib/pipeline/abort";
+import { refreshDiscoveryLock, releaseDiscoveryLock } from "@/lib/redis";
 import { startBuffer, pushEvent, finishBuffer, snapshotBuffer } from "@/lib/pipeline/eventBuffer";
 import { saveCheckpoint, deleteCheckpoint, type PipelineCheckpoint } from "@/lib/pipeline/checkpoint";
 import { qstashPublish, isServerless } from "@/lib/qstash";
@@ -83,8 +84,13 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
   // Bridge a durable Stop (set on any instance) to the local controller, and mirror the
   // buffer to Redis for cross-instance progress + heartbeat.
+  // True once this chunk has handed off to a QStash continuation — the finally block then
+  // KEEPS the global discovery lock so the next chunk keeps holding it; every other exit
+  // (success, stop, error) releases it.
+  let handedOff = false;
   const hb = setInterval(() => {
     void snapshotBuffer();
+    void refreshDiscoveryLock(run.id); // keep the global lock alive while this run works
     void isStopRequested().then((s) => { if (s && !signal.aborted) controller.abort("user stopped"); });
   }, 2500);
 
@@ -125,7 +131,12 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     const resume = options?.resume;
     const isResuming = !!resume;
-    if (resume?.oldRunId) await deleteCheckpoint(resume.oldRunId);
+    // Do NOT delete the checkpoint at the start of a resumed chunk. It must survive until this
+    // chunk writes its own (saveCheckpoint overwrites the single key) or the run fully
+    // completes (line ~581). Deleting it here left a ~210s window with no checkpoint — if the
+    // chunk was then killed (Vercel's 300s hard limit) or aborted before re-saving, the next
+    // continuation found nothing and silently restarted the WHOLE pipeline from scratch
+    // (re-harvest RSS + reprocess from zero). That was the "restarts everything mid-run" bug.
     if (isResuming) {
       emit("discover", `Resuming from round ${resume.round} — ${resume.usedQueries.length} queries already done, skipping completed work`);
     }
@@ -502,6 +513,7 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
         emit(handed ? "process" : "complete", handed
           ? `Time budget reached — ${stillPending} articles remaining, continuing in a new run…`
           : `Time budget reached — ${stillPending} remaining. Click Resume to continue.`);
+        handedOff = handed; // keep the lock only if a continuation was actually scheduled
         finishBuffer();
         await finishPipelineRun(run.id, "completed", { ...stats, continued: handed ? 1 : 0 });
         return { runId: run.id, stats };
@@ -585,6 +597,10 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     throw e;
   } finally {
     clearInterval(hb);
+    // Release the global discovery lock unless we handed off to a continuation chunk (which
+    // keeps holding it). This is what lets the NEXT fresh run start — and blocks duplicates
+    // in the meantime.
+    if (!handedOff) await releaseDiscoveryLock().catch(() => {});
     await snapshotBuffer().catch(() => {});
     // Always shut down the headless browser so it doesn't linger between runs
     await closeSharedBrowser();
