@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -196,6 +197,7 @@ function ProspectRow({
 export default function WorkflowsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [wfSearch, setWfSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: "", campaign_id: "" });
@@ -348,11 +350,12 @@ export default function WorkflowsPage() {
 
   const includedCount = prospects.filter((p) => p.included).length;
 
-  // Group workflows by campaign
+  // Group workflows by campaign (filtered by the sidebar search box)
+  const wfMatch = (w: Workflow) => w.name.toLowerCase().includes(wfSearch.toLowerCase());
   const grouped = campaigns
-    .filter((c) => workflows.some((w) => w.campaign_id === c.id))
-    .map((c) => ({ campaign: c, items: workflows.filter((w) => w.campaign_id === c.id) }));
-  const uncampaigned = workflows.filter((w) => !w.campaign_id);
+    .map((c) => ({ campaign: c, items: workflows.filter((w) => w.campaign_id === c.id && wfMatch(w)) }))
+    .filter(({ items }) => items.length > 0);
+  const uncampaigned = workflows.filter((w) => !w.campaign_id && wfMatch(w));
 
   return (
     <div className="flex h-[calc(100vh-64px)] overflow-hidden">
@@ -364,6 +367,17 @@ export default function WorkflowsPage() {
             <Plus className="h-3.5 w-3.5" />
           </Button>
         </div>
+        {workflows.length > 6 && (
+          <div className="px-3 py-2 border-b border-border relative">
+            <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search workflows…"
+              value={wfSearch}
+              onChange={(e) => setWfSearch(e.target.value)}
+              className="h-8 pl-8 text-sm"
+            />
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto py-2">
           {loading ? (
             <div className="flex items-center justify-center h-20 text-muted-foreground text-sm">
@@ -405,6 +419,11 @@ export default function WorkflowsPage() {
               {workflows.length === 0 && (
                 <div className="px-3 py-6 text-center text-xs text-muted-foreground">
                   No workflows yet
+                </div>
+              )}
+              {workflows.length > 0 && grouped.length === 0 && uncampaigned.length === 0 && (
+                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                  No workflows match &ldquo;{wfSearch}&rdquo;
                 </div>
               )}
             </>
@@ -586,16 +605,16 @@ export default function WorkflowsPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Campaign (optional)</Label>
-              <select
-                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+              <SearchableSelect
                 value={form.campaign_id}
-                onChange={(e) => setForm(f => ({ ...f, campaign_id: e.target.value }))}
-              >
-                <option value="">All prospects (no campaign filter)</option>
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+                onChange={(id) => setForm(f => ({ ...f, campaign_id: id }))}
+                options={campaigns.map((c) => ({ id: c.id, label: c.name }))}
+                noneLabel="All prospects (no campaign filter)"
+                placeholder="Select campaign…"
+                searchPlaceholder="Search campaigns…"
+                menuWidth="w-full"
+                className="w-full"
+              />
             </div>
           </div>
           <DialogFooter>

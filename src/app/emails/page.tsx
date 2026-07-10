@@ -17,6 +17,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { Workflow, EmailTemplate, OutreachEmail, EmailSendConfig, LinkedinMessage } from "@/lib/types";
 import { isGuessSource } from "@/lib/enrich/personFilter";
 import { useAuthorDrawer } from "@/components/prospects/useAuthorDrawer";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 
 // LinkedIn brand glyph (lucide dropped brand icons). Inherits color via currentColor.
 function Linkedin({ className }: { className?: string }) {
@@ -544,19 +545,20 @@ export default function EmailsPage() {
             )}
           </div>
 
-          <div className="space-y-0.5 min-w-40">
+          <div className="space-y-0.5 min-w-48">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Template</p>
             <div className="flex gap-1">
-              <select
-                className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
+              <SearchableSelect
+                className="w-48"
                 value={selectedTemplate?.id ?? ""}
-                onChange={(e) => setSelectedTemplate(channelTemplates.find((t) => t.id === e.target.value) ?? null)}
-              >
-                <option value="">{mode === "linkedin" ? "No template (AI note only)" : "No template (AI-only opener)"}</option>
-                {channelTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+                onChange={(id) => setSelectedTemplate(channelTemplates.find((t) => t.id === id) ?? null)}
+                options={channelTemplates.map((t) => ({ id: t.id, label: t.name }))}
+                noneLabel={mode === "linkedin" ? "No template (AI note only)" : "No template (AI-only opener)"}
+                placeholder="Select template…"
+                searchPlaceholder="Search templates…"
+              />
               {selectedTemplate && (
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => openTemplateEditor(selectedTemplate)}>
+                <Button variant="ghost" size="sm" className="h-9 w-9 p-0 shrink-0" onClick={() => openTemplateEditor(selectedTemplate)}>
                   <Edit2 className="h-3.5 w-3.5" />
                 </Button>
               )}
