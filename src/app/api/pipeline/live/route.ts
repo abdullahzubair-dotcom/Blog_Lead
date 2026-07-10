@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { getBufferDurable, isRunAlive } from "@/lib/pipeline/eventBuffer";
+import { getDiscoveryMeta } from "@/lib/redis";
 
 export async function GET() {
   // "Alive" = a recent Redis heartbeat (or an in-memory run on this instance). Durable, so a
@@ -36,15 +37,32 @@ export async function GET() {
 
   const buffer = await getBufferDurable();
 
+  // Whole-discovery aggregation: ONE elapsed timer + cumulative progress across every chunk,
+  // measured against the baseline captured when this discovery first started. This is what
+  // makes the UI show steadily-climbing totals instead of per-chunk counters that reset (which
+  // looked like it kept restarting). Falls back to the current run's own timer if no meta.
+  const meta = await getDiscoveryMeta();
+  const totalHits = totRow.count ?? 0;
+  const processedHits = procRow.count ?? 0;
+  const totalAuthors = authRow.count ?? 0;
+  const runProgress = meta ? {
+    discovered: Math.max(0, totalHits - meta.baseHits),
+    processed: Math.max(0, processedHits - meta.baseProcessed),
+    authors: Math.max(0, totalAuthors - meta.baseAuthors),
+  } : null;
+  const elapsedMs = meta ? Date.now() - meta.startedAt
+    : (activeRun ? Date.now() - new Date(activeRun.started_at).getTime() : 0);
+
   return NextResponse.json({
     isRunning: alive || !!activeRun,
     activeRun,
-    totalHits: totRow.count ?? 0,
-    processedHits: procRow.count ?? 0,
-    totalAuthors: authRow.count ?? 0,
+    totalHits,
+    processedHits,
+    totalAuthors,
     // Replay buffered events (durable, survives refresh + instance change)
     bufferedEvents: buffer?.events ?? [],
     bufferRunId: buffer?.runId ?? null,
-    elapsedMs: activeRun ? Date.now() - new Date(activeRun.started_at).getTime() : 0,
+    elapsedMs,       // cumulative across chunks
+    runProgress,     // cumulative { discovered, processed, authors } for THIS discovery
   });
 }

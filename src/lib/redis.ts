@@ -59,12 +59,31 @@ export async function refreshDiscoveryLock(holder: string): Promise<void> {
 export async function releaseDiscoveryLock(): Promise<void> {
   const r = redis();
   if (!r) return;
-  await r.del(DISCOVERY_LOCK).catch(() => {});
+  await Promise.all([r.del(DISCOVERY_LOCK), r.del(DISCOVERY_META)]).catch(() => {});
 }
 export async function isDiscoveryLocked(): Promise<boolean> {
   const r = redis();
   if (!r) return false;
   return !!(await r.get(DISCOVERY_LOCK).catch(() => null));
+}
+
+// Whole-discovery timing + baseline, so the UI can show ONE continuous elapsed timer and
+// cumulative progress across all serverless chunks (instead of per-chunk counters that reset
+// and make it look like it's restarting). Set once at the fresh start; carried across chunks;
+// cleared on completion (see releaseDiscoveryLock).
+const DISCOVERY_META = "discovery:meta";
+export interface DiscoveryMeta { startedAt: number; baseHits: number; baseProcessed: number; baseAuthors: number }
+export async function startDiscoveryMeta(m: DiscoveryMeta): Promise<void> {
+  const r = redis();
+  if (!r) return;
+  await r.set(DISCOVERY_META, JSON.stringify(m), { ex: 60 * 60 * 24 }).catch(() => {});
+}
+export async function getDiscoveryMeta(): Promise<DiscoveryMeta | null> {
+  const r = redis();
+  if (!r) return null;
+  const raw = await r.get<any>(DISCOVERY_META).catch(() => null);
+  if (!raw) return null;
+  try { return typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
 }
 
 // ─── Daily-cap counter (per config, per UTC day) ────────────────────────────────

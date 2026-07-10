@@ -144,15 +144,17 @@ export default function HomePage() {
         const evs: PipelineProgressEvent[] = data.bufferedEvents ?? [];
         if (evs.length > 0) setPipelineEvents(evs);
         setPipelineElapsedMs(data.elapsedMs ?? 0);
-        // THIS run's progress (starts at 0 each run), from the latest event's per-run stats —
-        // NOT the all-time DB totals, which made a fresh run look like a continuation.
+        // Cumulative progress for the WHOLE discovery (aggregated across every serverless
+        // chunk), so the numbers climb steadily instead of resetting each chunk and looking
+        // like a restart. `runProgress` is the delta from the baseline captured at start;
+        // fall back to the latest event's per-run stats if the server didn't supply it.
         const s = [...evs].reverse().find((e) => e.hitsDiscovered != null || e.processed != null || e.authors != null);
-        if (s) setPipelineStats((prev) => ({
+        setPipelineStats((prev) => ({
           ...prev,
-          hitsDiscovered: s.hitsDiscovered ?? 0,
-          processed: s.processed ?? 0,
-          authors: s.authors ?? 0,
-          errors: s.errors ?? 0,
+          hitsDiscovered: data.runProgress?.discovered ?? s?.hitsDiscovered ?? prev.hitsDiscovered ?? 0,
+          processed: data.runProgress?.processed ?? s?.processed ?? prev.processed ?? 0,
+          authors: data.runProgress?.authors ?? s?.authors ?? prev.authors ?? 0,
+          errors: s?.errors ?? prev.errors ?? 0,
         }));
         if (!isReconnectedRef.current) setReconnected(true);
       } else if (isReconnectedRef.current && !sawRunningRef.current && discoverStartRef.current && Date.now() - discoverStartRef.current < 30_000) {

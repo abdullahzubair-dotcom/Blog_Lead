@@ -3,7 +3,7 @@ import { runDiscoveryPipeline } from "@/lib/pipeline/run";
 import { getCampaign, updateCampaign } from "@/lib/db/queries";
 import { findLatestCheckpoint } from "@/lib/pipeline/checkpoint";
 import { supabaseAdmin } from "@/lib/db/supabase";
-import { acquireDiscoveryLock, refreshDiscoveryLock } from "@/lib/redis";
+import { acquireDiscoveryLock, refreshDiscoveryLock, startDiscoveryMeta } from "@/lib/redis";
 
 export const maxDuration = 300; // 5 minutes on Vercel
 
@@ -43,6 +43,14 @@ export async function POST(req: NextRequest) {
   if (!resume) {
     const got = await acquireDiscoveryLock(`fresh-${Date.now()}`);
     if (!got) return NextResponse.json({ started: false, alreadyRunning: true, reason: "A discovery is already running. Only one can run at a time." });
+    // Snapshot baseline counts + start time so the UI shows ONE continuous timer + cumulative
+    // progress across all chunks, rather than per-chunk counters that reset.
+    const [hits, processed, authors] = await Promise.all([
+      supabaseAdmin.from("discovery_hits").select("id", { count: "exact", head: true }),
+      supabaseAdmin.from("discovery_hits").select("id", { count: "exact", head: true }).eq("processed", true),
+      supabaseAdmin.from("authors").select("id", { count: "exact", head: true }),
+    ]);
+    await startDiscoveryMeta({ startedAt: Date.now(), baseHits: hits.count ?? 0, baseProcessed: processed.count ?? 0, baseAuthors: authors.count ?? 0 });
   } else {
     await refreshDiscoveryLock(`resume-${Date.now()}`);
   }
