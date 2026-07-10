@@ -14,14 +14,22 @@ export async function GET(req: NextRequest) {
 
   // Amber warnings (not hard failures) — e.g. Tavily search quota nearly/fully used.
   const warnings: { label: string; message: string }[] = [];
-  if (tavily.enabled && (tavily.near || tavily.over || tavily.error)) {
+  const hasPool = (tavily.poolTotal ?? 0) > 0;
+  // With a key pool, only warn when the WHOLE pool is spent or down to its last key —
+  // a single key crossing 90% is normal (rotation handles it). Without a pool, old thresholds.
+  const poolLow = hasPool && tavily.poolActive <= 1;
+  if (tavily.enabled && (tavily.over || tavily.error || (hasPool ? poolLow : tavily.near))) {
     warnings.push({
       label: "Tavily search",
       message: tavily.error
-        ? `key error (${tavily.error.detail}) — replace TAVILY_API_KEY`
-        : tavily.over
-          ? `monthly quota used up (${tavily.used}/${tavily.limit}) — replace the key`
-          : `nearly out (${tavily.used}/${tavily.limit} this month) — swap the key soon`,
+        ? `key error (${tavily.error.detail})`
+        : hasPool
+          ? (tavily.over
+              ? `all ${tavily.poolTotal} Tavily keys are out for this month — add more in Settings`
+              : `only ${tavily.poolActive} of ${tavily.poolTotal} Tavily keys left — add more in Settings`)
+          : (tavily.over
+              ? `monthly quota used up (${tavily.used}/${tavily.limit}) — add keys in Settings`
+              : `nearly out (${tavily.used}/${tavily.limit} this month) — add keys in Settings`),
     });
   }
 
