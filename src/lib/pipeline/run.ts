@@ -30,7 +30,7 @@ import { classifyArchetype } from "@/lib/extract/archetype";
 import { scoreArticleRelevance } from "@/lib/extract/relevance";
 import { classifyContentSafety } from "@/lib/extract/safety";
 import { computeScore } from "@/lib/score";
-import { runLearningPhase } from "@/lib/learn";
+import { runLearningPhase, getPromotedLearnedDomains } from "@/lib/learn";
 import { generateDiscoveryQueries } from "@/lib/pipeline/queries";
 import { resolveAuthorSeed, harvestAuthorArchive } from "@/lib/pipeline/authorSeed";
 import { createPipelineController, clearStop, isStopRequested } from "@/lib/pipeline/abort";
@@ -135,8 +135,13 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     // ── RSS — run once upfront (fixed feeds, no query benefit from looping) ────
     if (harvesterMap.rss && !resume?.rssComplete) {
-      const rssCfg = enabledHarvesters.find((h) => h.name === "rss");
-      const rssDomains = (rssCfg?.config?.domains as string[] | undefined) ?? SEED_DOMAINS;
+      // RSS source set = curated SEED_DOMAINS ∪ auto-learned domains (sites where past runs
+      // found real writers). This is the self-expanding half — it grows every run. We do NOT
+      // read harvester_config.domains anymore: it used to REPLACE the seed list and had filled
+      // up with footer/CDN/social junk.
+      const learnedDomains = await getPromotedLearnedDomains().catch(() => []);
+      const rssDomains = [...new Set([...SEED_DOMAINS.map((d) => d.toLowerCase()), ...learnedDomains])];
+      if (learnedDomains.length) harvLog("rss", `Source set: ${SEED_DOMAINS.length} curated + ${learnedDomains.length} auto-learned = ${rssDomains.length} domains`);
       // Rotate through a bounded window each run so a large domain list stays within the
       // serverless budget while every domain gets covered over successive daily runs (RSS is a
       // freshness source — recent items — so cycling the window is exactly what we want).
