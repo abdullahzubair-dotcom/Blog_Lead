@@ -764,7 +764,7 @@ export async function getCampaign(id: string): Promise<Campaign | null> {
   return data;
 }
 
-export async function createCampaign(data: { name: string; keywords: string[]; region?: string; target_hits?: number; seed_writer_name?: string; seed_article_url?: string }): Promise<Campaign> {
+export async function createCampaign(data: { name: string; keywords: string[]; region?: string; target_hits?: number; seed_writer_name?: string; seed_article_url?: string; seed_domains?: string[]; seed_article_urls?: string[] }): Promise<Campaign> {
   const { data: campaign, error } = await supabaseAdmin
     .from("campaigns")
     .insert({ ...data, target_hits: data.target_hits ?? 2500, status: "draft" })

@@ -12,6 +12,8 @@ export async function POST(req: NextRequest) {
   let campaignId = body.campaign_id as string | undefined;
   let customKeywords: string[] | undefined;
   let seedWriter: { name?: string; articleUrl?: string } | undefined;
+  let seedDomains: string[] | undefined;
+  let seedArticleUrls: string[] | undefined;
   let resume: { usedQueries: string[]; round: number; rssComplete: boolean; discoveryDone?: boolean; oldRunId?: string } | undefined;
 
   // Resume mode — load checkpoint and continue from where we left off.
@@ -66,6 +68,8 @@ export async function POST(req: NextRequest) {
       if (campaign.seed_writer_name || campaign.seed_article_url) {
         seedWriter = { name: campaign.seed_writer_name ?? undefined, articleUrl: campaign.seed_article_url ?? undefined };
       }
+      seedDomains = campaign.seed_domains?.length ? campaign.seed_domains : undefined;
+      seedArticleUrls = campaign.seed_article_urls?.length ? campaign.seed_article_urls : undefined;
       await updateCampaign(campaignId, { status: "running" });
     }
   } else if (campaignId && resume) {
@@ -79,7 +83,7 @@ export async function POST(req: NextRequest) {
   // (seedWriter is only ever set on a fresh, non-resumed run — see discover/route.ts above —
   // and runDiscoveryPipeline itself also guards on !isResuming, so a resume never re-runs it.)
   after(async () => {
-    try { await runDiscoveryPipeline(undefined, { campaignId, customKeywords, seedWriter, resume }); }
+    try { await runDiscoveryPipeline(undefined, { campaignId, customKeywords, seedWriter, seedDomains, seedArticleUrls, resume }); }
     catch { if (campaignId) await updateCampaign(campaignId, { status: "done" }).catch(() => {}); }
   });
   return NextResponse.json({ started: true, auto: body.auto === true });

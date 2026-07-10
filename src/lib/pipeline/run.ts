@@ -58,6 +58,8 @@ export interface DiscoveryOptions {
   campaignId?: string;
   customKeywords?: string[];
   seedWriter?: { name?: string; articleUrl?: string };
+  seedDomains?: string[];      // campaign sites to mine (harvested via RSS/sitemap this run)
+  seedArticleUrls?: string[];  // campaign article URLs to pull authors from directly
   resume?: {
     usedQueries: string[];
     round: number;
@@ -151,13 +153,19 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       // read harvester_config.domains anymore: it used to REPLACE the seed list and had filled
       // up with footer/CDN/social junk.
       const learnedDomains = await getPromotedLearnedDomains().catch(() => []);
+      // Campaign "sites" (seedDomains) are cleaned to bare hosts and mined too. They're kept
+      // OUT of the rotating window below (added back in full afterward) so a campaign's chosen
+      // sites are always crawled on its run, never rotated away.
+      const seedDomainsClean = (options?.seedDomains ?? [])
+        .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, ""))
+        .filter(Boolean);
       const rssDomains = [...new Set([...SEED_DOMAINS.map((d) => d.toLowerCase()), ...learnedDomains])];
-      if (learnedDomains.length) harvLog("rss", `Source set: ${SEED_DOMAINS.length} curated + ${learnedDomains.length} auto-learned = ${rssDomains.length} domains`);
+      if (learnedDomains.length || seedDomainsClean.length) harvLog("rss", `Source set: ${SEED_DOMAINS.length} curated + ${learnedDomains.length} auto-learned${seedDomainsClean.length ? ` + ${seedDomainsClean.length} campaign sites` : ""} domains`);
       // Rotate through a bounded window each run so a large domain list stays within the
       // serverless budget while every domain gets covered over successive daily runs (RSS is a
       // freshness source — recent items — so cycling the window is exactly what we want).
       const RSS_WINDOW = 70;
-      const domainsToFetch = rssDomains.length <= RSS_WINDOW
+      const windowDomains = rssDomains.length <= RSS_WINDOW
         ? rssDomains
         : (() => {
             const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400_000);
@@ -165,7 +173,9 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
             const rotated = [...rssDomains.slice(start), ...rssDomains.slice(0, start)];
             return rotated.slice(0, RSS_WINDOW);
           })();
-      harvLog("rss", `Fetching feeds from ${domainsToFetch.length} of ${rssDomains.length} domains (rotating window)`);
+      // Campaign sites always included in full (in addition to the rotating window).
+      const domainsToFetch = [...new Set([...seedDomainsClean, ...windowDomains])];
+      harvLog("rss", `Fetching feeds from ${domainsToFetch.length} domains (rotating window${seedDomainsClean.length ? ` + ${seedDomainsClean.length} campaign sites` : ""})`);
       queue.add(async () => {
         if (signal.aborted) return;
         const rawHits = await rssHarvester.run("ai", { domains: domainsToFetch }).catch((e) => {
@@ -203,6 +213,18 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     // Only on a fresh (non-resumed) run — the checkpoint doesn't track seed-harvest
     // completion, and re-running it on resume would just waste fetches/search calls
     // (inserts dedupe harmlessly on conflict, so it's wasteful, not incorrect).
+    // Campaign "articles" — specific URLs the user wants outreach from. Queue them directly
+    // as discovery hits so Stage 2 profiles each one, extracts its author, and (via the Email
+    // Finder step) digs out the author's email. Fresh run only (dedupes on conflict anyway).
+    const seedArticleUrls = (options?.seedArticleUrls ?? [])
+      .map((u) => u.trim()).filter((u) => /^https?:\/\//.test(u));
+    if (seedArticleUrls.length > 0 && !isResuming) {
+      emit("discover", `Queuing ${seedArticleUrls.length} campaign article${seedArticleUrls.length === 1 ? "" : "s"} for author extraction...`);
+      const saved = await insertDiscoveryHits(seedArticleUrls.map((url) => ({ url, source: "seed_article" }))).catch(() => 0);
+      stats.hitsDiscovered += saved;
+      emit("discover", `${saved} campaign article(s) queued.`);
+    }
+
     const seedWriter = options?.seedWriter;
     const hasKeywords = (options?.customKeywords?.length ?? 0) > 0;
     if (seedWriter && !isResuming) {

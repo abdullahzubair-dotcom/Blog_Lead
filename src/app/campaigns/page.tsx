@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Megaphone, Plus, X, Loader2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -20,19 +21,20 @@ export default function CampaignsPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); // null = creating new
-  const [form, setForm] = useState({ name: "", keywordInput: "", keywords: [] as string[], seedWriterName: "", seedArticleUrl: "" });
+  const [form, setForm] = useState({ name: "", keywordInput: "", keywords: [] as string[], seedWriterName: "", seedArticleUrl: "", seedDomains: "", seedArticleUrls: "" });
   const [saving, setSaving] = useState(false);
 
   function openNew() {
     setEditingId(null);
-    setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "" });
+    setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "", seedDomains: "", seedArticleUrls: "" });
     setCreating(true);
   }
   function openEdit(c: Campaign) {
     setEditingId(c.id);
-    setForm({ name: c.name, keywordInput: "", keywords: c.keywords ?? [], seedWriterName: c.seed_writer_name ?? "", seedArticleUrl: c.seed_article_url ?? "" });
+    setForm({ name: c.name, keywordInput: "", keywords: c.keywords ?? [], seedWriterName: c.seed_writer_name ?? "", seedArticleUrl: c.seed_article_url ?? "", seedDomains: (c.seed_domains ?? []).join("\n"), seedArticleUrls: (c.seed_article_urls ?? []).join("\n") });
     setCreating(true);
   }
+  const parseList = (s: string) => s.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
 
   async function fetchCampaigns() {
     setLoading(true);
@@ -54,13 +56,17 @@ export default function CampaignsPage() {
   }
 
   async function handleCreateOrSave() {
-    if (!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim())) return;
+    const domains = parseList(form.seedDomains);
+    const articleUrls = parseList(form.seedArticleUrls);
+    if (!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim() && !domains.length && !articleUrls.length)) return;
     setSaving(true);
     const payload = {
       name: form.name,
       keywords: form.keywords,
       seed_writer_name: form.seedWriterName.trim() || null,
       seed_article_url: form.seedArticleUrl.trim() || null,
+      seed_domains: domains,
+      seed_article_urls: articleUrls,
     };
     const res = editingId
       ? await fetch(`/api/campaigns/${editingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
@@ -68,7 +74,7 @@ export default function CampaignsPage() {
     if (res.ok) {
       setCreating(false);
       setEditingId(null);
-      setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "" });
+      setForm({ name: "", keywordInput: "", keywords: [], seedWriterName: "", seedArticleUrl: "", seedDomains: "", seedArticleUrls: "" });
       fetchCampaigns();
     }
     setSaving(false);
@@ -139,7 +145,17 @@ export default function CampaignsPage() {
                     ✍ {c.seed_writer_name}
                   </span>
                 )}
-                {c.keywords.length === 0 && !c.seed_writer_name && !c.seed_article_url && (
+                {(c.seed_domains?.length ?? 0) > 0 && (
+                  <span className="text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                    🌐 {c.seed_domains!.length} site{c.seed_domains!.length === 1 ? "" : "s"}
+                  </span>
+                )}
+                {(c.seed_article_urls?.length ?? 0) > 0 && (
+                  <span className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-0.5 rounded-full">
+                    📄 {c.seed_article_urls!.length} article{c.seed_article_urls!.length === 1 ? "" : "s"}
+                  </span>
+                )}
+                {c.keywords.length === 0 && !c.seed_writer_name && !c.seed_article_url && !(c.seed_domains?.length) && !(c.seed_article_urls?.length) && (
                   <span className="text-xs text-muted-foreground italic">No keywords — uses global seeds</span>
                 )}
               </div>
@@ -214,12 +230,34 @@ export default function CampaignsPage() {
                 Give us a writer's name and/or one article link and we'll find their profile and pull in their other articles on that site. Works with or without keywords above — with no keywords, discovery focuses on just this writer.
               </p>
             </div>
+
+            <div className="space-y-2 border-t border-border pt-4">
+              <Label>Sites to outreach <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Textarea
+                placeholder={"One site per line, e.g.\nfastcompany.com\ncreativebloq.com"}
+                className="min-h-[70px] font-mono text-xs"
+                value={form.seedDomains}
+                onChange={(e) => setForm(f => ({ ...f, seedDomains: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">Discovery mines each site's feed/sitemap for its writers, then the Email Finder digs out their emails.</p>
+            </div>
+
+            <div className="space-y-2 border-t border-border pt-4">
+              <Label>Specific articles to outreach <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Textarea
+                placeholder={"One article URL per line, e.g.\nhttps://site.com/best-ai-video-tools"}
+                className="min-h-[70px] font-mono text-xs"
+                value={form.seedArticleUrls}
+                onChange={(e) => setForm(f => ({ ...f, seedArticleUrls: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">We&apos;ll pull the author of each article into this campaign, then find their email so you can reach out.</p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button onClick={handleCreateOrSave} disabled={!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim()) || saving}>
+            <Button onClick={handleCreateOrSave} disabled={!form.name || (!form.keywords.length && !form.seedWriterName.trim() && !form.seedArticleUrl.trim() && !parseList(form.seedDomains).length && !parseList(form.seedArticleUrls).length) || saving}>
               {saving && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-              Create Campaign
+              {editingId ? "Save Campaign" : "Create Campaign"}
             </Button>
           </DialogFooter>
         </DialogContent>

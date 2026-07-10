@@ -184,6 +184,8 @@ export interface Campaign {
   author_count?: number;
   seed_writer_name?: string | null;
   seed_article_url?: string | null;
+  seed_domains?: string[] | null;      // sites to mine for authors
+  seed_article_urls?: string[] | null; // specific article URLs to pull authors from
 }
 
 // ─── Workflows ────────────────────────────────────────────────────────────────
