@@ -744,6 +744,13 @@ export default function HomePage() {
           {(pipelineEvents.length > 0 || isDiscovering || isReconnected) && (
             <Card>
               <CardContent className="pt-5 pb-4">
+                {(liveRun?.isRunning || isDiscovering || isReconnected) && (
+                  <div className="flex items-center gap-2 text-xs mb-4 bg-violet-500/8 border border-violet-500/25 rounded-md px-3 py-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-violet-500 animate-pulse shrink-0" />
+                    <span className="text-muted-foreground">Running discovery for</span>
+                    <span className="font-semibold text-violet-300 truncate">{liveRun?.campaign?.name || "All prospects (no campaign)"}</span>
+                  </div>
+                )}
                 {isReconnected && (
                   <div className="flex items-center gap-2 text-[11px] text-amber-500/90 mb-4 bg-amber-500/8 border border-amber-500/25 rounded-md px-3 py-2">
                     <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />

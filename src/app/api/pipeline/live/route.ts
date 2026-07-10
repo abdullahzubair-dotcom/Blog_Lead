@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { getBufferDurable, isRunAlive } from "@/lib/pipeline/eventBuffer";
 import { getDiscoveryMeta } from "@/lib/redis";
+import { findLatestCheckpoint } from "@/lib/pipeline/checkpoint";
+import { getCampaign } from "@/lib/db/queries";
 
 export async function GET() {
   // "Alive" = a recent Redis heartbeat (or an in-memory run on this instance). Durable, so a
@@ -53,6 +55,23 @@ export async function GET() {
   const elapsedMs = meta ? Date.now() - meta.startedAt
     : (activeRun ? Date.now() - new Date(activeRun.started_at).getTime() : 0);
 
+  // Which campaign this discovery is running for — so a refresh/resume shows it at the top.
+  // Prefer the meta (set at fresh start); fall back to the resume checkpoint for older runs.
+  let campaign: { id: string | null; name: string | null } | null = null;
+  if (meta && (meta.campaignName || meta.campaignId)) {
+    campaign = { id: meta.campaignId ?? null, name: meta.campaignName ?? null };
+  } else if (meta) {
+    campaign = { id: null, name: null }; // explicitly "All prospects" (no campaign)
+  } else if (activeRun) {
+    const cp = await findLatestCheckpoint().catch(() => null);
+    if (cp?.campaignId) {
+      const c = await getCampaign(cp.campaignId).catch(() => null);
+      campaign = { id: cp.campaignId, name: c?.name ?? null };
+    } else {
+      campaign = { id: null, name: null };
+    }
+  }
+
   return NextResponse.json({
     isRunning: alive || !!activeRun,
     activeRun,
@@ -64,5 +83,6 @@ export async function GET() {
     bufferRunId: buffer?.runId ?? null,
     elapsedMs,       // cumulative across chunks
     runProgress,     // cumulative { discovered, processed, authors } for THIS discovery
+    campaign,        // { id, name } this discovery is scoped to (null name = All prospects)
   });
 }

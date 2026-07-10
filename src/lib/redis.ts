@@ -72,7 +72,7 @@ export async function isDiscoveryLocked(): Promise<boolean> {
 // and make it look like it's restarting). Set once at the fresh start; carried across chunks;
 // cleared on completion (see releaseDiscoveryLock).
 const DISCOVERY_META = "discovery:meta";
-export interface DiscoveryMeta { startedAt: number; baseHits: number; baseProcessed: number; baseAuthors: number }
+export interface DiscoveryMeta { startedAt: number; baseHits: number; baseProcessed: number; baseAuthors: number; campaignId?: string | null; campaignName?: string | null }
 export async function startDiscoveryMeta(m: DiscoveryMeta): Promise<void> {
   const r = redis();
   if (!r) return;

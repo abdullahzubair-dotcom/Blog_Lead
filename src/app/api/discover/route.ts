@@ -45,12 +45,16 @@ export async function POST(req: NextRequest) {
     if (!got) return NextResponse.json({ started: false, alreadyRunning: true, reason: "A discovery is already running. Only one can run at a time." });
     // Snapshot baseline counts + start time so the UI shows ONE continuous timer + cumulative
     // progress across all chunks, rather than per-chunk counters that reset.
-    const [hits, processed, authors] = await Promise.all([
+    const [hits, processed, authors, campaign] = await Promise.all([
       supabaseAdmin.from("discovery_hits").select("id", { count: "exact", head: true }),
       supabaseAdmin.from("discovery_hits").select("id", { count: "exact", head: true }).eq("processed", true),
       supabaseAdmin.from("authors").select("id", { count: "exact", head: true }),
+      campaignId ? getCampaign(campaignId).catch(() => null) : Promise.resolve(null),
     ]);
-    await startDiscoveryMeta({ startedAt: Date.now(), baseHits: hits.count ?? 0, baseProcessed: processed.count ?? 0, baseAuthors: authors.count ?? 0 });
+    await startDiscoveryMeta({
+      startedAt: Date.now(), baseHits: hits.count ?? 0, baseProcessed: processed.count ?? 0, baseAuthors: authors.count ?? 0,
+      campaignId: campaignId ?? null, campaignName: campaign?.name ?? null,
+    });
   } else {
     await refreshDiscoveryLock(`resume-${Date.now()}`);
   }
