@@ -28,6 +28,7 @@ interface StatusEmail {
   sent_by_email?: string | null;
   author_name: string;
   publication: string;
+  recipient?: string | null;
   subject: string;
   status: string;
   kind: string; // initial | followup
@@ -376,6 +377,7 @@ export default function SendingPage() {
             <button onClick={() => openAuthor(e.author_id)} className="truncate hover:text-violet-400 hover:underline text-left">{e.author_name}</button>
             {e.guess && <span className="text-[9px] uppercase tracking-wide text-amber-500 border border-amber-500/40 rounded px-1 shrink-0">guess</span>}
           </p>
+          <p className="text-xs text-blue-400/90 truncate font-mono">{e.recipient || <span className="text-red-400 italic font-sans">no email address</span>}</p>
           <p className="text-xs text-muted-foreground truncate">{e.subject || e.publication}</p>
         </div>
         <div className="text-right shrink-0">

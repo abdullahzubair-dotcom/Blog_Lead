@@ -39,6 +39,7 @@ export async function GET(req: NextRequest) {
       sent_by_email: e.sent_by_email ?? null,
       author_name: e.author?.full_name ?? "Unknown",
       publication: e.author?.domain?.name ?? host ?? "",
+      recipient: mailto ? (mailto.value as string).replace(/^mailto:/, "") : null,
       subject: e.subject ?? "",
       status: e.status,
       kind: e.kind ?? "initial",

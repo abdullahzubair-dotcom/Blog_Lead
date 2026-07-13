@@ -1860,7 +1860,7 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
 // Sending status for the progress page. Counts are ALL-TIME (via exact count queries, not
 // a capped page), so the top stats reflect the entirety of sending history. The queued and
 // sent/failed lists are paginated so the UI can "load more" back through everything.
-const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, bounced_at, reply_kind, reply_from, reply_subject, reply_excerpt, reply_sentiment, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
+const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, bounced_at, reply_kind, reply_from, reply_subject, reply_excerpt, reply_sentiment, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source, value), domain:domains(host, country, name))";
 
 export async function getSendingStatus(opts: {
   workflowId?: string;
