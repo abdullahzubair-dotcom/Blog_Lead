@@ -27,7 +27,7 @@ export interface OutstandingSent {
 export interface MatchInfo { uid: number; kind: ReplyKind; from: string; subject: string; excerpt: string }
 
 // Decide what an inbound message actually is, from its From address, subject and headers.
-function classify(from: string, subject: string, headers: string): ReplyKind {
+export function classify(from: string, subject: string, headers: string): ReplyKind {
   const f = from.toLowerCase();
   const s = subject.toLowerCase();
   const h = headers.toLowerCase();
@@ -43,7 +43,7 @@ function classify(from: string, subject: string, headers: string): ReplyKind {
   return "reply";
 }
 
-function stripToText(raw: string, isHtml: boolean): string {
+export function stripToText(raw: string, isHtml: boolean): string {
   let t = raw;
   if (isHtml || /<[a-z][\s\S]*>/i.test(t)) {
     t = t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
@@ -53,7 +53,7 @@ function stripToText(raw: string, isHtml: boolean): string {
 }
 
 // Walk imapflow's bodyStructure to the best text part (prefer text/plain, else text/html).
-function findTextPart(node: any): { part: string | undefined; html: boolean } | null {
+export function findTextPart(node: any): { part: string | undefined; html: boolean } | null {
   if (!node) return null;
   const type = (node.type || "").toLowerCase();
   if (type === "text/plain") return { part: node.part, html: false };
@@ -67,7 +67,7 @@ function findTextPart(node: any): { part: string | undefined; html: boolean } | 
   return htmlHit;
 }
 
-async function fetchExcerpt(client: ImapFlow, uid: number, structure: any): Promise<string> {
+export async function fetchExcerpt(client: ImapFlow, uid: number, structure: any): Promise<string> {
   const tp = findTextPart(structure);
   const part = tp?.part || "1"; // single-part messages: whole body is part 1
   try {
@@ -178,7 +178,10 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
       for (const [id, m] of matches) {
         const meta = { reply_kind: m.kind, reply_from: m.from || null, reply_subject: m.subject || null, reply_excerpt: m.excerpt || null };
         if (m.kind === "reply") {
-          await updateOutreachEmail(id, { ...meta, replied_at: nowIso, bounced_at: null });
+          // Sentiment of a genuine reply, best-effort (surfaced in the inbox list).
+          const { analyzeSentiment } = await import("@/lib/email/inbox");
+          const sentiment = await analyzeSentiment(m.excerpt || m.subject).catch(() => null);
+          await updateOutreachEmail(id, { ...meta, reply_sentiment: sentiment, replied_at: nowIso, bounced_at: null });
           result.repliesFound++;
         } else if (m.kind === "bounce") {
           // Not a reply — the address bounced. Clear any bogus reply mark, record the bounce,

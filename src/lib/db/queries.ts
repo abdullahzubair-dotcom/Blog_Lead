@@ -1316,6 +1316,7 @@ export async function updateOutreachEmail(id: string, data: {
   reply_from?: string | null;
   reply_subject?: string | null;
   reply_excerpt?: string | null;
+  reply_sentiment?: string | null; // positive | neutral | negative
   bounced_at?: string | null;    // set when the address bounced (not a real reply)
 }): Promise<void> {
   const { error } = await supabaseAdmin.from("outreach_emails").update(data).eq("id", id);
@@ -1838,7 +1839,7 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
 // Sending status for the progress page. Counts are ALL-TIME (via exact count queries, not
 // a capped page), so the top stats reflect the entirety of sending history. The queued and
 // sent/failed lists are paginated so the UI can "load more" back through everything.
-const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, bounced_at, reply_kind, reply_from, reply_subject, reply_excerpt, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
+const SEND_COLS = "id, workflow_id, author_id, sender_email, sent_by_email, subject, status, kind, parent_id, scheduled_at, sent_at, error, replied_at, bounced_at, reply_kind, reply_from, reply_subject, reply_excerpt, reply_sentiment, success_at, success_link, success_notes, author:authors(full_name, timezone, contacts(type, source), domain:domains(host, country, name))";
 
 export async function getSendingStatus(opts: {
   workflowId?: string;
@@ -1923,6 +1924,91 @@ export async function getSendingStatus(opts: {
     followups: followups ?? [], followupsTotal,
     replied: replied ?? [], repliedTotal: cReplied,
     wins: wins ?? [], winsTotal: cSuccess,
+  };
+}
+
+// ─── Inbox (per-person conversations) ───────────────────────────────────────────
+// One row per person we've emailed, with their latest reply status + sentiment, so the inbox
+// can split them into responses vs bounces/auto-replies vs awaiting. DB-driven (fast); the
+// per-person thread does live IMAP.
+export interface InboxPerson {
+  author_id: string;
+  name: string;
+  publication: string;
+  avatar_url: string | null;
+  recipient: string;                 // their email
+  sender_email: string | null;       // the mailbox we used (holds the thread)
+  category: "replied" | "filtered" | "sent";
+  last_at: string | null;
+  replied_at: string | null;
+  bounced_at: string | null;
+  reply_kind: string | null;
+  reply_subject: string | null;
+  reply_excerpt: string | null;
+  reply_sentiment: string | null;
+  success_at: string | null;
+  subject: string;
+}
+
+export async function getInboxList(): Promise<InboxPerson[]> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("author_id, sender_email, subject, status, sent_at, replied_at, bounced_at, reply_kind, reply_subject, reply_excerpt, reply_sentiment, success_at, author:authors(full_name, avatar_url, domain:domains(name, host), contacts(type, value))")
+    .or("status.eq.sent,replied_at.not.is.null,bounced_at.not.is.null")
+    .order("sent_at", { ascending: false, nullsFirst: false })
+    .limit(3000);
+
+  // Group by author; pick the most-engaged representative (replied > bounced > latest sent).
+  const rank = (r: any) => (r.replied_at ? 3 : r.bounced_at || r.reply_kind === "auto" ? 2 : 1);
+  const byAuthor = new Map<string, any>();
+  for (const r of data ?? []) {
+    const cur = byAuthor.get(r.author_id);
+    if (!cur || rank(r) > rank(cur) || (rank(r) === rank(cur) && (r.sent_at ?? "") > (cur.sent_at ?? ""))) byAuthor.set(r.author_id, r);
+  }
+
+  const out: InboxPerson[] = [];
+  for (const [author_id, r] of byAuthor) {
+    const a: any = r.author ?? {};
+    const mailto = (a.contacts ?? []).find((c: any) => c.type === "mailto");
+    const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
+    if (!recipient) continue;
+    const category: InboxPerson["category"] = r.replied_at ? "replied" : (r.bounced_at || r.reply_kind === "auto") ? "filtered" : "sent";
+    out.push({
+      author_id, name: a.full_name ?? "Unknown", publication: a.domain?.name ?? a.domain?.host ?? "",
+      avatar_url: a.avatar_url ?? null, recipient, sender_email: r.sender_email ?? null, category,
+      last_at: r.replied_at ?? r.bounced_at ?? r.sent_at ?? null,
+      replied_at: r.replied_at ?? null, bounced_at: r.bounced_at ?? null, reply_kind: r.reply_kind ?? null,
+      reply_subject: r.reply_subject ?? null, reply_excerpt: r.reply_excerpt ?? null, reply_sentiment: r.reply_sentiment ?? null,
+      success_at: r.success_at ?? null, subject: r.subject ?? "",
+    });
+  }
+  out.sort((a, b) => (b.last_at ?? "").localeCompare(a.last_at ?? ""));
+  return out;
+}
+
+// Resolve the mailbox + recipient + threading context for a person's conversation.
+export async function getInboxTarget(authorId: string): Promise<{ recipient: string; senderEmail: string | null; name: string; publication: string; lastMessageId: string | null; lastSubject: string } | null> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("sender_email, subject, message_id, sent_at, author:authors(full_name, domain:domains(name, host), contacts(type, value))")
+    .eq("author_id", authorId)
+    .order("sent_at", { ascending: false, nullsFirst: false })
+    .limit(20);
+  const rows = data ?? [];
+  if (rows.length === 0) return null;
+  const a: any = rows[0].author ?? {};
+  const mailto = (a.contacts ?? []).find((c: any) => c.type === "mailto");
+  const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
+  if (!recipient) return null;
+  const withSender = rows.find((r: any) => r.sender_email) as any;
+  const withMsgId = rows.find((r: any) => r.message_id) as any;
+  return {
+    recipient,
+    senderEmail: withSender?.sender_email ?? null,
+    name: a.full_name ?? "Unknown",
+    publication: a.domain?.name ?? a.domain?.host ?? "",
+    lastMessageId: withMsgId?.message_id ?? null,
+    lastSubject: rows[0].subject ?? "",
   };
 }
 

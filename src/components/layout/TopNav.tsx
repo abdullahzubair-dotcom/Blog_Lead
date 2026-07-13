@@ -24,6 +24,7 @@ const PAGE_NAMES: Record<string, string> = {
   settings: "Settings",
   campaigns: "Campaigns",
   workflows: "Workflows",
+  inbox: "Inbox",
   emails: "Emails",
 };
 

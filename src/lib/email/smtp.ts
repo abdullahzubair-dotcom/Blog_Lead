@@ -73,14 +73,17 @@ function htmlify(body: string): string {
 // throwaway transport for that identity — correct even if the password changed. cc is used
 // to loop in whoever actually initiated the send when it's going out through a shared inbox,
 // so they see replies and can reply themselves.
+export interface MailAttachment { filename: string; content: string; encoding?: string; contentType?: string }
+
 export async function sendEmailAs(opts: {
   user: string; pass: string; fromName?: string; to: string; subject: string; body: string; cc?: string;
   inReplyTo?: string; references?: string; // thread a follow-up into the original thread
+  attachments?: MailAttachment[];
 }): Promise<SendResult> {
   try {
     const tx = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user: opts.user, pass: opts.pass } });
     const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
-    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, inReplyTo: opts.inReplyTo, references: opts.references, text: opts.body, html: htmlify(opts.body) });
+    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, inReplyTo: opts.inReplyTo, references: opts.references, text: opts.body, html: htmlify(opts.body), attachments: opts.attachments });
     tx.close();
     return { ok: true, messageId: info.messageId };
   } catch (e: any) {

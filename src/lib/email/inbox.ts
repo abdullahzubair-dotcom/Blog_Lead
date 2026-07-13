@@ -1,0 +1,136 @@
+// Per-person inbox: read the full email conversation between one of our sending mailboxes and
+// a specific recipient, over IMAP (read-only). Reuses the same classification the reply
+// detector uses so bounces/auto-replies are labeled consistently. Also a small LLM sentiment
+// helper for genuine replies.
+import { ImapFlow } from "imapflow";
+import { classify, findTextPart, type ReplyKind } from "@/lib/email/imap";
+
+export interface ConversationMessage {
+  uid: number;
+  direction: "outbound" | "inbound"; // from us → them, or them → us
+  from: string;
+  fromName: string;
+  to: string;
+  subject: string;
+  date: string;        // ISO
+  body: string;        // plain-text (HTML stripped), capped
+  kind: ReplyKind | null; // reply | bounce | auto for inbound; null for outbound
+  messageId: string | null;
+  hasAttachments: boolean;
+}
+
+const norm = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
+
+function clean(raw: string, isHtml: boolean, maxLen = 6000): string {
+  let t = raw;
+  if (isHtml || /<[a-z][\s\S]*>/i.test(t)) t = t.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]+>/g, " ");
+  return t.replace(/\r/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&#39;|&rsquo;/gi, "'").replace(/&quot;/gi, '"')
+    .replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, maxLen);
+}
+
+async function bodyText(client: ImapFlow, uid: number, structure: any): Promise<string> {
+  const tp = findTextPart(structure);
+  try {
+    const dl = await client.download(uid, tp?.part || "1", { uid: true });
+    if (!dl?.content) return "";
+    const bufs: Buffer[] = [];
+    for await (const c of dl.content as AsyncIterable<Buffer>) { bufs.push(c); if (Buffer.concat(bufs).length > 120_000) break; }
+    return clean(Buffer.concat(bufs).toString("utf8"), !!tp?.html);
+  } catch { return ""; }
+}
+
+function hasAttach(node: any): boolean {
+  if (!node) return false;
+  const disp = (node.disposition || "").toLowerCase();
+  if (disp === "attachment") return true;
+  const type = (node.type || "").toLowerCase();
+  if (type && !type.startsWith("text/") && !type.startsWith("multipart/") && node.part) return true;
+  return (node.childNodes || []).some(hasAttach);
+}
+
+// Read the whole conversation with `recipient` from `account`'s mailbox. Searches Gmail's
+// "All Mail" (both sent + received in one place); falls back to INBOX.
+export async function fetchConversation(account: string, pass: string, recipient: string, opts: { days?: number; max?: number } = {}): Promise<ConversationMessage[]> {
+  const days = opts.days ?? 365;
+  const max = opts.max ?? 60;
+  const since = new Date(Date.now() - days * 86400_000);
+  const rcpt = recipient.toLowerCase();
+  const acct = account.toLowerCase();
+
+  const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user: account, pass }, logger: false, socketTimeout: 60_000, greetingTimeout: 20_000 });
+  // imapflow emits 'error' on socket issues; without a handler an emitted error crashes the
+  // whole process. Swallow it here — the awaited operations reject and we handle that below.
+  client.on("error", () => {});
+  await client.connect();
+  const out: ConversationMessage[] = [];
+  try {
+    let mailbox = "[Gmail]/All Mail";
+    let lock;
+    try { lock = await client.getMailboxLock(mailbox); }
+    catch { mailbox = "INBOX"; lock = await client.getMailboxLock(mailbox); }
+    try {
+      // Messages to OR from this person.
+      let uids = (await client.search({ since, or: [{ from: recipient }, { to: recipient }] }, { uid: true })) || [];
+      if (uids.length === 0) return out;
+      if (uids.length > max) uids = uids.slice(-max);
+
+      // PASS 1: collect metadata only. Do NOT download bodies inside the fetch stream —
+      // issuing a download() command mid-fetch on the same connection deadlocks → socket
+      // timeout. Gather everything first, then download bodies afterward.
+      const metas: { uid: number; direction: "outbound" | "inbound"; from: string; fromName: string; to: string; subject: string; date: string; kind: ReplyKind | null; messageId: string | null; structure: any; hasAttachments: boolean }[] = [];
+      for await (const msg of client.fetch(uids, { uid: true, envelope: true, bodyStructure: true, headers: ["message-id", "in-reply-to", "references", "from", "auto-submitted", "x-autoreply", "precedence", "content-type", "x-failed-recipients"] }, { uid: true })) {
+        const fromAddr = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
+        const toAddrs = (msg.envelope?.to ?? []).map((t: any) => (t.address ?? "").toLowerCase());
+        const involvesRcpt = fromAddr === rcpt || toAddrs.includes(rcpt);
+        if (!involvesRcpt) continue;
+        const direction: "outbound" | "inbound" = fromAddr === acct ? "outbound" : "inbound";
+        const hlow = (msg.headers?.toString() ?? "").toLowerCase();
+        const subject = msg.envelope?.subject ?? "";
+        metas.push({
+          uid: msg.uid!, direction, from: fromAddr, fromName: msg.envelope?.from?.[0]?.name ?? "",
+          to: toAddrs[0] ?? "", subject,
+          date: (msg.envelope?.date ? new Date(msg.envelope.date) : new Date()).toISOString(),
+          kind: direction === "inbound" ? classify(fromAddr, subject, hlow) : null,
+          messageId: msg.envelope?.messageId ? norm(msg.envelope.messageId) : null,
+          structure: (msg as any).bodyStructure, hasAttachments: hasAttach((msg as any).bodyStructure),
+        });
+      }
+      // PASS 2: download bodies now that the fetch stream is fully drained.
+      for (const m of metas) {
+        out.push({ uid: m.uid, direction: m.direction, from: m.from, fromName: m.fromName, to: m.to, subject: m.subject, date: m.date, kind: m.kind, messageId: m.messageId, hasAttachments: m.hasAttachments, body: await bodyText(client, m.uid, m.structure) });
+      }
+    } finally { lock.release(); }
+    await client.logout();
+  } catch (e) {
+    try { await client.close(); } catch { /* ignore */ }
+    throw e;
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+// Quick sentiment for a genuine reply — positive / neutral / negative. Best-effort (LLM).
+export async function analyzeSentiment(text: string): Promise<"positive" | "neutral" | "negative" | null> {
+  const key = process.env.OPENROUTER_API_KEY;
+  const t = (text || "").trim().slice(0, 1500);
+  if (!key || key.length < 20 || !t) return null;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "anthropic/claude-haiku-4-5",
+        messages: [{ role: "user", content: `A journalist/blogger replied to a PR outreach email. Classify the reply's sentiment toward working with us as exactly one word: positive, neutral, or negative.\n\npositive = interested, wants to cover us, asks for more, says yes.\nnegative = not interested, unsubscribe, annoyed, hard no.\nneutral = anything else (out of scope, "maybe later", clarifying question).\n\nReply:\n"""${t}"""\n\nOne word only:` }],
+        max_tokens: 4, temperature: 0,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const w = (data.choices?.[0]?.message?.content ?? "").toLowerCase();
+    if (w.includes("positive")) return "positive";
+    if (w.includes("negative")) return "negative";
+    if (w.includes("neutral")) return "neutral";
+    return null;
+  } catch { return null; }
+}
