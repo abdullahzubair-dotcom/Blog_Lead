@@ -1,75 +1,108 @@
-# Deploying GenAI Scout to Vercel
+# Deploy — quick start (self-hosted, off Vercel)
 
-## 1. Push the repo & import into Vercel
+Copy-paste guide to run GenAI Scout on your own server. For the full explanation of every
+variable and every gotcha, see **[DEPLOYMENT.md](./DEPLOYMENT.md)**. This page is the fast path.
 
-1. Push this project to a Git repo (GitHub/GitLab).
-2. In Vercel → **Add New Project** → import the repo. Framework preset auto-detects **Next.js**. Root directory = `genai-scout`.
-3. Don't deploy yet — set env vars first (step 2).
+Use a **persistent Node server** (VPS, Render, Railway, Fly.io, Docker) — not a short-timeout
+serverless platform. Node **20+**. All data/cache/scheduler/email are external SaaS — reuse the
+same accounts; there's nothing to migrate.
 
-## 2. Environment variables (Vercel → Project → Settings → Environment Variables)
+---
 
-Copy every key from your local `.env.local`. Grouped by purpose:
+## 1. Env file
 
-**Supabase / DB**
-- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`
+Create `.env.local` (or set these in your host's dashboard). Copy values from the current
+deployment. The ones people forget are marked ⚠️.
 
-**Auth (Google OAuth, restricted to your domain)**
-- `AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ALLOWED_DOMAINS`
-- `NEXTAUTH_URL` and `APP_URL` → set both to your deployed URL, e.g. `https://your-app.vercel.app`
-  (also add that URL to the Google OAuth **Authorized redirect URIs**: `https://your-app.vercel.app/api/auth/callback/google`)
+```bash
+# --- Database (Supabase) — reuse the existing project, nothing to migrate ---
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+DATABASE_URL=
 
-**Email sending (Gmail SMTP)**
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM_NAME`, `SMTP_FROM_EMAIL`
+# --- Auth ---
+AUTH_SECRET=                 # ⚠️ MUST equal the old value (also decrypts saved Gmail passwords)
+AUTH_TRUST_HOST=true         # ⚠️ REQUIRED off Vercel, or login 500s
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+ALLOWED_DOMAINS=imagine.art
 
-**Scheduling / durability**
-- `CRON_SECRET` — protects the send-processor endpoint (Vercel cron + QStash send it as a Bearer token)
-- `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` — send-lock, daily-cap counters
-- `QSTASH_TOKEN` — from console.upstash.com → **QStash** tab (needed for the every-30-min trigger; see step 4)
+# --- New public URL ---
+APP_URL=https://YOUR-DOMAIN          # ⚠️ your new domain
+NEXTAUTH_URL=https://YOUR-DOMAIN     # ⚠️ same
 
-**Finders / search (all free tiers)**
-- `BLITZ_API_KEY`, `REOON_API_KEY`, `HUNTER_API_KEY`, `TAVILY_API_KEY`, `OPENROUTER_API_KEY`
-- Optional extra search providers: `GOOGLE_CSE_KEY`, `GOOGLE_CSE_CX`, `SERPER_API_KEY`, `BRAVE_SEARCH_API_KEY`
-- `OPEN_PAGE_RANK_API_KEY`, `SGAI_API_KEY` (optional)
+# --- Cache + scheduler (Upstash) — reuse ---
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+QSTASH_TOKEN=
+CRON_SECRET=                 # ⚠️ keep same; protects the cron endpoints
 
-**Serverless note**
-- Set `PLAYWRIGHT_ENABLED=false` (or omit it). Vercel can't launch Chromium; the harvesters/finders fall back to plain fetch automatically.
+# --- AI + search + email ---
+OPENROUTER_API_KEY=
+TAVILY_API_KEY=
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=waleed.idrees@imagine.art
+SMTP_PASS=                   # Gmail app password
+SMTP_FROM_EMAIL=waleed.idrees@imagine.art
 
-> Never commit `.env.local` — it's gitignored. Set these only in the Vercel dashboard.
-
-## 3. Deploy
-
-Click **Deploy**. First build runs `next build`. After it's live, confirm you can sign in with your Google account (must be on an `ALLOWED_DOMAINS` domain).
-
-## 4. Turn on timezone-aware sending (Upstash QStash)
-
-Vercel **Hobby** crons only fire **once per day**, which isn't enough to send at each recipient's local time. `vercel.json` includes that daily cron as a baseline, but for accurate per-timezone delivery use QStash to ping the processor every 30 minutes:
-
-1. In console.upstash.com open the **QStash** tab, copy `QSTASH_TOKEN` into `.env.local` **and** Vercel env vars.
-2. Run once locally, pointing at your deployed URL:
-   ```
-   node scripts/setup-qstash.mjs https://your-app.vercel.app
-   ```
-   This creates a schedule that POSTs `https://your-app.vercel.app/api/emails/process` every 30 min, forwarding `Authorization: Bearer <CRON_SECRET>`.
-3. Verify in the QStash dashboard under **Schedules**. Re-running the script replaces the old schedule (idempotent).
-
-That's it — the processor is idempotent and lock-guarded, so the Vercel daily cron and the QStash schedule can both point at it safely.
-
-## 5. Run DB migrations against prod (if not already applied)
-
-Migrations are additive column/table adds. With `DATABASE_URL` pointing at your Supabase DB:
-```
-node scripts/006_email_send_config.mjs
-node scripts/007_author_timezone.mjs
-node scripts/008_enrich_prospect_emails.mjs
-node scripts/009_enrichment_runs.mjs
-node scripts/010_contacted_override.mjs
+# --- Optional ---
+PLAYWRIGHT_ENABLED=false     # true (+ install chromium) = better scraping on a real server
+# BRAVE_SEARCH_API_KEY= GOOGLE_CSE_KEY= GOOGLE_CSE_CX= SERPER_API_KEY= SGAI_API_KEY=
+# OPEN_PAGE_RANK_API_KEY= BLITZ_API_KEY= HUNTER_API_KEY= REOON_API_KEY= SLACK_BROKEN_LINKS_WEBHOOK=
+# Do NOT set VERCEL.
 ```
 
-## How sending works in production
+## 2. Google OAuth (one console change)
 
-1. Generate emails in a workflow → **Send All** schedules each email at its recipient's **local** send-window time (timezone inferred per person; the config timezone is only a fallback).
-2. QStash (every 30 min) → `/api/emails/process`:
-   - acquires a Redis **lock** (overlapping triggers never double-send),
-   - loads each email's workflow **send config** (from name/email), sends via SMTP,
-   - increments a per-workflow **daily-cap** counter in Redis.
-3. Watch the **Sending** page — live queue (cancel/edit before send) and sent/failed list.
+Google Cloud Console → your OAuth client → **Authorized redirect URIs**, add:
+```
+https://YOUR-DOMAIN/api/auth/callback/google
+```
+
+## 3. Build & run
+
+### Option A — directly on the box
+```bash
+npm ci
+npm run build
+npm start                      # port 3000 (PORT=8080 to change)
+# keep alive: pm2 start "npm start" --name genai-scout
+```
+
+### Option B — Docker
+```bash
+docker build -t genai-scout .
+docker run -d --name genai-scout --env-file .env.local -p 3000:3000 genai-scout
+```
+Uses the `Dockerfile` in this repo. Put nginx/Caddy in front for HTTPS (or use the platform's TLS).
+
+## 4. Repoint the scheduler (crons)
+
+Recurring jobs are Upstash **QStash** schedules (send emails every 30 min; daily audit at 08:00
+UTC). Point them at the new URL and remove the old Vercel ones:
+```bash
+node scripts/setup-qstash.mjs https://YOUR-DOMAIN
+# then delete the schedules still pointing at *.vercel.app in the Upstash QStash console
+```
+No QStash? A plain crontab works too:
+```
+*/30 * * * *  curl -s -X POST https://YOUR-DOMAIN/api/emails/process -H "Authorization: Bearer $CRON_SECRET"
+0    8 * * *  curl -s -X POST https://YOUR-DOMAIN/api/cron/daily     -H "Authorization: Bearer $CRON_SECRET"
+```
+(`vercel.json`'s cron is Vercel-only and simply ignored elsewhere — QStash/crontab covers it.)
+
+## 5. Smoke test
+
+1. Open the site → sign in with an `@imagine.art` Google account.
+2. Prospects loads (DB ok) · Settings shows Tavily keys (Redis ok).
+3. Sending → "Process now" succeeds (SMTP ok).
+4. Inbox → open someone with a reply → thread loads (IMAP ok).
+
+**If login fails** → missing `AUTH_TRUST_HOST=true` or the OAuth redirect URI / `NEXTAUTH_URL`.
+**If emails never auto-send** → QStash still points at the old URL, or `CRON_SECRET` mismatch.
+
+> New/empty database instead of the current Supabase? First run `migrations/001_initial.sql`,
+> then every `scripts/0NN_*.mjs` in order (001→030) with `DATABASE_URL` set. Against the current
+> Supabase this is already done — skip it.
