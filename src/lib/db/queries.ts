@@ -48,6 +48,7 @@ import type {
 import { isLikelyPersonName, isGuessSource } from "@/lib/enrich/personFilter";
 import { registrableDomain } from "@/lib/util/domain";
 import { isBlockedUrl } from "@/lib/util/url";
+import { isRoleEmail } from "@/lib/email/roleEmail";
 
 // ─── Domains ─────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,11 @@ export async function linkArticleAuthor(articleId: string, authorId: string) {
 // ─── Contacts ────────────────────────────────────────────────────────────────
 
 export async function upsertContact(data: Partial<Contact> & { type: string; value: string }): Promise<Contact> {
+  // Never store role/generic mailboxes (press@, pressinquiries@, info@, git@hf.co, …). They get
+  // scraped off sites and attached to many authors, so we'd email one org inbox over and over.
+  if (data.type === "mailto" && isRoleEmail(data.value)) {
+    return { ...(data as any), id: "", skipped_role_email: true } as unknown as Contact;
+  }
   const { data: contact, error } = await supabaseAdmin
     .from("contacts")
     .upsert(data, { onConflict: "author_id,type,value", ignoreDuplicates: true })
@@ -123,6 +129,21 @@ export async function upsertContact(data: Partial<Contact> & { type: string; val
     .single();
   if (error) throw error;
   return contact;
+}
+
+// Has this exact recipient address already been SENT an outreach email (any author)? Used to
+// dedupe: many authors can share one address, but we only ever email that inbox once.
+export async function recipientAlreadyContacted(recipientEmail: string, excludeId?: string): Promise<boolean> {
+  const clean = recipientEmail.replace(/^mailto:/i, "").trim().toLowerCase();
+  if (!clean) return false;
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("id, author:authors!inner(contacts!inner(type, value))")
+    .eq("status", "sent")
+    .eq("author.contacts.type", "mailto")
+    .ilike("author.contacts.value", `mailto:${clean}`)
+    .limit(2);
+  return (data ?? []).some((r: any) => r.id !== excludeId);
 }
 
 // ─── Mentions ────────────────────────────────────────────────────────────────

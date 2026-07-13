@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent } from "@/lib/db/queries";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
+import { isRoleEmail } from "@/lib/email/roleEmail";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
 import { decryptSecret } from "@/lib/crypto";
 import { acquireLock, releaseLock, incrDailyCount, getDailyCount } from "@/lib/redis";
@@ -58,6 +59,21 @@ export async function POST(req: NextRequest) {
       if (!email.recipient) {
         await updateOutreachEmail(email.id, { status: "failed", error: "No recipient email address" });
         failed++; results.push({ id: email.id, ok: false, error: "no recipient" });
+        continue;
+      }
+
+      // Never send to a role/generic org mailbox (press@, info@, git@hf.co, …) — not a person,
+      // and shared across many authors. Park it so it stops (and won't follow up).
+      if (isRoleEmail(email.recipient)) {
+        await updateOutreachEmail(email.id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
+        results.push({ id: email.id, ok: false, error: "role address" });
+        continue;
+      }
+      // Dedupe by destination: if this exact inbox was already emailed (any author), don't
+      // email it again — this is what stops the same address getting hit over and over.
+      if (await recipientAlreadyContacted(email.recipient, email.id).catch(() => false)) {
+        await updateOutreachEmail(email.id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
+        results.push({ id: email.id, ok: false, error: "duplicate recipient" });
         continue;
       }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent } from "@/lib/db/queries";
+import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
+import { isRoleEmail } from "@/lib/email/roleEmail";
 
 export const maxDuration = 60;
 
@@ -14,6 +15,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!email.recipient) {
     await updateOutreachEmail(id, { status: "failed", error: "No recipient email address" });
     return NextResponse.json({ ok: false, error: "No recipient email address" });
+  }
+  if (isRoleEmail(email.recipient)) {
+    await updateOutreachEmail(id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
+    return NextResponse.json({ ok: false, error: "generic/role address — not sent" });
+  }
+  if (await recipientAlreadyContacted(email.recipient, id).catch(() => false)) {
+    await updateOutreachEmail(id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
+    return NextResponse.json({ ok: false, error: "this address was already emailed — not sent" });
   }
 
   // A follow-up threads into its parent; skip if the recipient already engaged.
