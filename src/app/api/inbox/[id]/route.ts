@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getInboxTarget, getUserAppPasswordEnc } from "@/lib/db/queries";
+import { getInboxTarget, getUserAppPasswordEnc, markInboxSeen } from "@/lib/db/queries";
 import { decryptSecret } from "@/lib/crypto";
 import { fetchConversation } from "@/lib/email/inbox";
 import { auth } from "@auth";
@@ -15,6 +15,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const target = await getInboxTarget(id, me);
   if (!target) return NextResponse.json({ error: "No conversation with this person in your mailbox." }, { status: 404 });
+  await markInboxSeen(me, id).catch(() => {}); // opening the thread clears unread
 
   // Always the logged-in user's own mailbox + credentials — never anyone else's.
   const account = me;

@@ -11,10 +11,13 @@ export async function GET() {
   const [people, shared] = await Promise.all([getInboxList(me), getSharedSenders()]);
   const labelByEmail = new Map(shared.map((s) => [s.email, s.label]));
   const enriched = people.map((p) => ({ ...p, sender_label: p.sender_email ? labelByEmail.get(p.sender_email) ?? null : null }));
+  const active = enriched.filter((p) => !p.dismissed); // dismissed excluded from the main tabs
   const counts = {
-    replied: enriched.filter((p) => p.category === "replied").length,
-    sent: enriched.filter((p) => p.category === "sent").length,
-    filtered: enriched.filter((p) => p.category === "filtered").length,
+    unread: active.filter((p) => p.unread).length,
+    replied: active.filter((p) => p.category === "replied").length,
+    sent: active.filter((p) => p.category === "sent").length,
+    filtered: active.filter((p) => p.category === "filtered").length,
+    dismissed: enriched.filter((p) => p.dismissed).length,
   };
   return NextResponse.json({ people: enriched, counts });
 }

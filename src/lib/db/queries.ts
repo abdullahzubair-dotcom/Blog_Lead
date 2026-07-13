@@ -1948,6 +1948,8 @@ export interface InboxPerson {
   reply_sentiment: string | null;
   success_at: string | null;
   subject: string;
+  unread: boolean;     // a reply arrived that this user hasn't opened yet
+  dismissed: boolean;  // pushed aside by this user
 }
 
 // Scoped to ONE user's own mailbox: only conversations sent through their email address
@@ -1972,6 +1974,15 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
     if (!cur || rank(r) > rank(cur) || (rank(r) === rank(cur) && (r.sent_at ?? "") > (cur.sent_at ?? ""))) byAuthor.set(r.author_id, r);
   }
 
+  // Per-user read/dismiss state for these authors.
+  const authorIds = [...byAuthor.keys()];
+  const stateByAuthor = new Map<string, { last_seen_at: string | null; dismissed: boolean }>();
+  if (authorIds.length) {
+    const { data: st } = await supabaseAdmin
+      .from("inbox_state").select("author_id, last_seen_at, dismissed").eq("user_email", userEmail).in("author_id", authorIds);
+    for (const s of st ?? []) stateByAuthor.set(s.author_id, { last_seen_at: s.last_seen_at, dismissed: !!s.dismissed });
+  }
+
   const out: InboxPerson[] = [];
   for (const [author_id, r] of byAuthor) {
     const a: any = r.author ?? {};
@@ -1979,6 +1990,8 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
     const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
     if (!recipient) continue;
     const category: InboxPerson["category"] = r.replied_at ? "replied" : (r.bounced_at || r.reply_kind === "auto") ? "filtered" : "sent";
+    const state = stateByAuthor.get(author_id);
+    const unread = !!r.replied_at && (!state?.last_seen_at || r.replied_at > state.last_seen_at);
     out.push({
       author_id, name: a.full_name ?? "Unknown", publication: a.domain?.name ?? a.domain?.host ?? "",
       avatar_url: a.avatar_url ?? null, recipient, sender_email: r.sender_email ?? null, category,
@@ -1986,10 +1999,27 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
       replied_at: r.replied_at ?? null, bounced_at: r.bounced_at ?? null, reply_kind: r.reply_kind ?? null,
       reply_subject: r.reply_subject ?? null, reply_excerpt: r.reply_excerpt ?? null, reply_sentiment: r.reply_sentiment ?? null,
       success_at: r.success_at ?? null, subject: r.subject ?? "",
+      unread, dismissed: !!state?.dismissed,
     });
   }
   out.sort((a, b) => (b.last_at ?? "").localeCompare(a.last_at ?? ""));
   return out;
+}
+
+// Mark a person's thread as seen by this user (clears unread).
+export async function markInboxSeen(userEmail: string, authorId: string): Promise<void> {
+  await supabaseAdmin.from("inbox_state").upsert(
+    { user_email: userEmail, author_id: authorId, last_seen_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: "user_email,author_id" },
+  );
+}
+
+// Push a person aside (or bring them back) for this user.
+export async function setInboxDismissed(userEmail: string, authorId: string, dismissed: boolean): Promise<void> {
+  await supabaseAdmin.from("inbox_state").upsert(
+    { user_email: userEmail, author_id: authorId, dismissed, updated_at: new Date().toISOString() },
+    { onConflict: "user_email,author_id" },
+  );
 }
 
 // Resolve a person's conversation context — SCOPED to the requesting user's own mailbox. Only

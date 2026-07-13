@@ -17,6 +17,8 @@ export interface ConversationMessage {
   kind: ReplyKind | null; // reply | bounce | auto for inbound; null for outbound
   messageId: string | null;
   hasAttachments: boolean;
+  images: string[];       // displayable image URLs (remote <img> + inline image attachments as data URLs)
+  attachments: { filename: string; contentType: string }[];
 }
 
 const norm = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
@@ -46,6 +48,38 @@ function hasAttach(node: any): boolean {
   const type = (node.type || "").toLowerCase();
   if (type && !type.startsWith("text/") && !type.startsWith("multipart/") && node.part) return true;
   return (node.childNodes || []).some(hasAttach);
+}
+
+// The text/html part id (for pulling out remote <img> URLs).
+function findHtmlPart(node: any): string | undefined {
+  if (!node) return undefined;
+  if ((node.type || "").toLowerCase() === "text/html" && node.part) return node.part;
+  for (const c of node.childNodes || []) { const r = findHtmlPart(c); if (r) return r; }
+  return undefined;
+}
+// All non-text leaf parts (attachments + inline images), with size from bodyStructure.
+function collectParts(node: any, acc: { part: string; contentType: string; filename: string; size: number }[] = []): typeof acc {
+  if (!node) return acc;
+  const type = (node.type || "").toLowerCase();
+  if (node.part && !type.startsWith("multipart/") && !type.startsWith("text/")) {
+    acc.push({ part: node.part, contentType: type, filename: node.dispositionParameters?.filename || node.parameters?.name || node.part, size: node.size || 0 });
+  }
+  for (const c of node.childNodes || []) collectParts(c, acc);
+  return acc;
+}
+function extractImgUrls(html: string): string[] {
+  const urls: string[] = []; const re = /<img[^>]+src=["']?(https?:\/\/[^"'\s>]+)/gi; let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && urls.length < 8) urls.push(m[1]);
+  return [...new Set(urls)];
+}
+async function downloadPart(client: ImapFlow, uid: number, part: string): Promise<Buffer | null> {
+  try {
+    const dl = await client.download(uid, part, { uid: true });
+    if (!dl?.content) return null;
+    const bufs: Buffer[] = [];
+    for await (const c of dl.content as AsyncIterable<Buffer>) bufs.push(c);
+    return Buffer.concat(bufs);
+  } catch { return null; }
 }
 
 // Read the whole conversation with `recipient` from `account`'s mailbox. Searches Gmail's
@@ -95,9 +129,28 @@ export async function fetchConversation(account: string, pass: string, recipient
           structure: (msg as any).bodyStructure, hasAttachments: hasAttach((msg as any).bodyStructure),
         });
       }
-      // PASS 2: download bodies now that the fetch stream is fully drained.
-      for (const m of metas) {
-        out.push({ uid: m.uid, direction: m.direction, from: m.from, fromName: m.fromName, to: m.to, subject: m.subject, date: m.date, kind: m.kind, messageId: m.messageId, hasAttachments: m.hasAttachments, body: await bodyText(client, m.uid, m.structure) });
+      // PASS 2: download bodies + images now that the fetch stream is fully drained. Bounded:
+      // rich content (html images + inline image attachments) only for the most recent messages,
+      // with a global cap on inline-image downloads, so a big thread can't stall the connection.
+      const RICH_FROM = Math.max(0, metas.length - 14);
+      let imgBudget = 12;
+      for (let i = 0; i < metas.length; i++) {
+        const m = metas[i];
+        const body = await bodyText(client, m.uid, m.structure);
+        const images: string[] = [];
+        const attachments: { filename: string; contentType: string }[] = [];
+        if (i >= RICH_FROM) {
+          const htmlPart = findHtmlPart(m.structure);
+          if (htmlPart) { const raw = await downloadPart(client, m.uid, htmlPart); if (raw) images.push(...extractImgUrls(raw.toString("utf8"))); }
+          for (const p of collectParts(m.structure)) {
+            attachments.push({ filename: p.filename, contentType: p.contentType });
+            if (imgBudget > 0 && p.contentType.startsWith("image/") && p.size > 0 && p.size < 2_500_000) {
+              const buf = await downloadPart(client, m.uid, p.part);
+              if (buf) { images.push(`data:${p.contentType};base64,${buf.toString("base64")}`); imgBudget--; }
+            }
+          }
+        }
+        out.push({ uid: m.uid, direction: m.direction, from: m.from, fromName: m.fromName, to: m.to, subject: m.subject, date: m.date, kind: m.kind, messageId: m.messageId, hasAttachments: m.hasAttachments, body, images: [...new Set(images)].slice(0, 12), attachments });
       }
     } finally { lock.release(); }
     await client.logout();
