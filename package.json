@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "vercel:link": "vercel link --yes --token=$VERCEL_TOKEN",
+    "vercel:envs:prod": "vercel pull --yes --environment=production --token=$VERCEL_TOKEN && sed -i '/^VERCEL_OIDC_TOKEN=/d' .vercel/.env.production.local",
+    "vercel:build:prod": "vercel build --token=$VERCEL_TOKEN --prod",
+    "vercel:deploy:prod": "vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN --meta githubCommitAuthorName=${GITHUB_COMMIT_AUTHOR_NAME} --meta githubCommitOrg=${GITHUB_COMMIT_ORG} --meta githubCommitRef=${GITHUB_COMMIT_REF} --meta githubCommitSha=${GITHUB_COMMIT_SHA} --meta githubDeployment=${GITHUB_DEPLOYMENT} --meta githubOrg=${GITHUB_ORG} --meta githubRepo=${GITHUB_REPO} --meta githubCommitRepo=${GITHUB_COMMIT_REPO}"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.107.0",
@@ -67,6 +71,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vercel": "^48.12.1"
   }
 }

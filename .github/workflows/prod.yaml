@@ -1,0 +1,49 @@
+name: Vercel Production Deployment
+env:
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+on:
+  push:
+    branches:
+      - main
+jobs:
+  Deploy-Prod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_VERSION: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - name: Install Dependencies
+        run: npm ci
+      - name: Link Vercel Project
+        run: npm run vercel:link
+      - name: Pull Vercel Environment Information
+        run: npm run vercel:envs:prod
+        env:
+          GIT_BRANCH: main
+      - name: Build Project Artifacts
+        run: npm run vercel:build:prod
+      - name: Change the author of last commit to web@vyro.ai
+        run: |
+          git config user.name 'web@vyro.ai'
+          git config user.email 'web@vyro.ai'
+          git commit --amend --reset-author --no-verify -m "$(git log -1 --pretty=%B)"
+      - name: Deploy Project Artifacts to Vercel
+        run: npm run vercel:deploy:prod
+        env:
+          GIT_BRANCH: main
+          GITHUB_COMMIT_AUTHOR_NAME: ${{ github.actor }}
+          GITHUB_COMMIT_ORG: ${{ github.repository_owner }}
+          GITHUB_COMMIT_REF: main
+          GITHUB_COMMIT_SHA: ${{ github.sha }}
+          GITHUB_DEPLOYMENT: '1'
+          GITHUB_ORG: ${{ github.repository_owner }}
+          GITHUB_REPO: 'seo_email'
+          GITHUB_COMMIT_REPO: 'seo_email'
