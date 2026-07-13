@@ -1950,11 +1950,17 @@ export interface InboxPerson {
   subject: string;
 }
 
-export async function getInboxList(): Promise<InboxPerson[]> {
-  const { data } = await supabaseAdmin
+// Scoped to ONE user's own mailbox: only conversations sent through their email address
+// (sender_email = their email). Legacy env-sender sends (sender_email null) belong to the
+// SMTP_USER account. This is the privacy boundary — a user only ever sees/reads their own inbox.
+export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
+  const isEnvOwner = !!process.env.SMTP_USER && userEmail.toLowerCase() === process.env.SMTP_USER.toLowerCase();
+  let q = supabaseAdmin
     .from("outreach_emails")
     .select("author_id, sender_email, subject, status, sent_at, replied_at, bounced_at, reply_kind, reply_subject, reply_excerpt, reply_sentiment, success_at, author:authors(full_name, avatar_url, domain:domains(name, host), contacts(type, value))")
-    .or("status.eq.sent,replied_at.not.is.null,bounced_at.not.is.null")
+    .or("status.eq.sent,replied_at.not.is.null,bounced_at.not.is.null");
+  q = isEnvOwner ? q.or(`sender_email.eq.${userEmail},sender_email.is.null`) : q.eq("sender_email", userEmail);
+  const { data } = await q
     .order("sent_at", { ascending: false, nullsFirst: false })
     .limit(3000);
 
@@ -1986,25 +1992,27 @@ export async function getInboxList(): Promise<InboxPerson[]> {
   return out;
 }
 
-// Resolve the mailbox + recipient + threading context for a person's conversation.
-export async function getInboxTarget(authorId: string): Promise<{ recipient: string; senderEmail: string | null; name: string; publication: string; lastMessageId: string | null; lastSubject: string } | null> {
-  const { data } = await supabaseAdmin
+// Resolve a person's conversation context — SCOPED to the requesting user's own mailbox. Only
+// returns a target if this user actually emailed the person through their own address, so the
+// thread is always read from (and replied from) the user's own mailbox, never anyone else's.
+export async function getInboxTarget(authorId: string, userEmail: string): Promise<{ recipient: string; senderEmail: string; name: string; publication: string; lastMessageId: string | null; lastSubject: string } | null> {
+  const isEnvOwner = !!process.env.SMTP_USER && userEmail.toLowerCase() === process.env.SMTP_USER.toLowerCase();
+  let q = supabaseAdmin
     .from("outreach_emails")
     .select("sender_email, subject, message_id, sent_at, author:authors(full_name, domain:domains(name, host), contacts(type, value))")
-    .eq("author_id", authorId)
-    .order("sent_at", { ascending: false, nullsFirst: false })
-    .limit(20);
+    .eq("author_id", authorId);
+  q = isEnvOwner ? q.or(`sender_email.eq.${userEmail},sender_email.is.null`) : q.eq("sender_email", userEmail);
+  const { data } = await q.order("sent_at", { ascending: false, nullsFirst: false }).limit(20);
   const rows = data ?? [];
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return null; // this user never emailed this person from their own mailbox
   const a: any = rows[0].author ?? {};
   const mailto = (a.contacts ?? []).find((c: any) => c.type === "mailto");
   const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
   if (!recipient) return null;
-  const withSender = rows.find((r: any) => r.sender_email) as any;
   const withMsgId = rows.find((r: any) => r.message_id) as any;
   return {
     recipient,
-    senderEmail: withSender?.sender_email ?? null,
+    senderEmail: userEmail, // always the requesting user's own mailbox
     name: a.full_name ?? "Unknown",
     publication: a.domain?.name ?? a.domain?.host ?? "",
     lastMessageId: withMsgId?.message_id ?? null,

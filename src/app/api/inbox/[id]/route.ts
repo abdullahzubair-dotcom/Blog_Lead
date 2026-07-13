@@ -2,20 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { getInboxTarget, getUserAppPasswordEnc } from "@/lib/db/queries";
 import { decryptSecret } from "@/lib/crypto";
 import { fetchConversation } from "@/lib/email/inbox";
+import { auth } from "@auth";
 
 export const maxDuration = 60;
 
-// GET /api/inbox/[id] — live IMAP conversation between our mailbox and this author.
+// GET /api/inbox/[id] — live IMAP conversation, read ONLY from the logged-in user's own mailbox.
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const target = await getInboxTarget(id);
-  if (!target) return NextResponse.json({ error: "No conversation for this person yet." }, { status: 404 });
+  const session = await auth().catch(() => null);
+  const me = session?.user?.email;
+  if (!me) return NextResponse.json({ error: "not signed in" }, { status: 401 });
 
-  // The mailbox that holds the thread: the sender we used, else the env SMTP identity.
-  const account = target.senderEmail ?? process.env.SMTP_USER ?? "";
-  const pass = target.senderEmail ? decryptSecret(await getUserAppPasswordEnc(target.senderEmail)) : (process.env.SMTP_PASS ?? null);
+  const target = await getInboxTarget(id, me);
+  if (!target) return NextResponse.json({ error: "No conversation with this person in your mailbox." }, { status: 404 });
+
+  // Always the logged-in user's own mailbox + credentials — never anyone else's.
+  const account = me;
+  const isEnvOwner = !!process.env.SMTP_USER && me.toLowerCase() === process.env.SMTP_USER.toLowerCase();
+  const pass = decryptSecret(await getUserAppPasswordEnc(me)) ?? (isEnvOwner ? (process.env.SMTP_PASS ?? null) : null);
   if (!account || !pass) {
-    return NextResponse.json({ error: `No mailbox credentials available for ${account || "the sender"}.`, target, messages: [] }, { status: 200 });
+    return NextResponse.json({ error: `No mailbox credentials on file for ${me}. Add your Gmail app password in Settings to read your inbox.`, target, messages: [] }, { status: 200 });
   }
 
   try {

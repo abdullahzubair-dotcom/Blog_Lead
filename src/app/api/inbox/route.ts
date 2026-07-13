@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { getInboxList, getSharedSenders } from "@/lib/db/queries";
+import { auth } from "@auth";
 
-// GET /api/inbox — everyone we've emailed, grouped, with reply status + sentiment, so the
-// inbox can split them into Responses / Awaiting / Filtered (bounces + auto-replies).
+// GET /api/inbox — the logged-in user's OWN mailbox only: people they've emailed from their
+// address, grouped into Responses / Awaiting / Filtered. Never shows other users' inboxes.
 export async function GET() {
-  const [people, shared] = await Promise.all([getInboxList(), getSharedSenders()]);
+  const session = await auth().catch(() => null);
+  const me = session?.user?.email;
+  if (!me) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+  const [people, shared] = await Promise.all([getInboxList(me), getSharedSenders()]);
   const labelByEmail = new Map(shared.map((s) => [s.email, s.label]));
   const enriched = people.map((p) => ({ ...p, sender_label: p.sender_email ? labelByEmail.get(p.sender_email) ?? null : null }));
   const counts = {
