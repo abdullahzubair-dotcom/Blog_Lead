@@ -29,11 +29,17 @@ export async function POST(req: NextRequest) {
   // Link audit start returns fast (work continues via after()+QStash in its own function).
   const audit = await hit("/api/link-audit/run").then((r) => r.json()).catch((e) => ({ error: e?.message }));
 
+  // Daily email finding — dig out emails for any authors still missing one (only_new keeps it
+  // to authors never searched, so it doesn't re-spend credits on the same people every day).
+  const finder = await fetch(`${base}/api/enrich/run?key=${encodeURIComponent(secret)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ only_new: true }),
+  }).then((r) => r.json()).catch((e) => ({ error: e?.message }));
+
   // Notifications check does its work inside the request — run it post-response so this
   // cron returns quickly; Vercel keeps the function alive for after() work.
   after(async () => { await hit("/api/notifications/check").catch(() => {}); });
 
-  return NextResponse.json({ ok: true, audit, notifications: "triggered" });
+  return NextResponse.json({ ok: true, audit, finder, notifications: "triggered" });
 }
 
 export async function GET(req: NextRequest) {

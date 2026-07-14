@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download } from "lucide-react";
+import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download, Sparkles, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -223,6 +224,18 @@ export default function WorkflowsPage() {
   const [addSearching, setAddSearching] = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
 
+  // AI find: describe the writers you want → LLM keywords → search ALL prospects → add all.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiIncludeContacted, setAiIncludeContacted] = useState(false);
+  const [aiIncludeGuessed, setAiIncludeGuessed] = useState(true);
+  const [aiSearching, setAiSearching] = useState(false);
+  const [aiResults, setAiResults] = useState<any[]>([]);
+  const [aiKeywords, setAiKeywords] = useState<string[]>([]);
+  const [aiTotal, setAiTotal] = useState(0);
+  const [aiSearched, setAiSearched] = useState(false);
+  const [aiAdding, setAiAdding] = useState(false);
+
   async function fetchAll() {
     setLoading(true);
     const [wRes, cRes] = await Promise.all([fetch("/api/workflows"), fetch("/api/campaigns")]);
@@ -338,6 +351,31 @@ export default function WorkflowsPage() {
     }).catch(() => {});
     setAddingId(null);
     await fetchProspects(selected);
+  }
+
+  async function runAiSearch() {
+    if (!aiPrompt.trim()) return;
+    setAiSearching(true); setAiSearched(true);
+    const res = await fetch("/api/prospects/ai-search", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: aiPrompt, includeContacted: aiIncludeContacted, includeGuessed: aiIncludeGuessed }),
+    }).then((r) => r.ok ? r.json() : null).catch(() => null);
+    setAiResults(res?.prospects ?? []); setAiKeywords(res?.keywords ?? []); setAiTotal(res?.total ?? 0);
+    setAiSearching(false);
+  }
+
+  async function addAllAi() {
+    if (!selected || aiResults.length === 0) return;
+    setAiAdding(true);
+    const ids = aiResults.map((r: any) => r.author.id);
+    const res = await fetch(`/api/workflows/${selected.id}/prospects`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ author_ids: ids }),
+    }).then((r) => r.json()).catch(() => ({}));
+    setAiAdding(false); setAiOpen(false);
+    await fetchProspects(selected);
+    // toast via the existing pattern isn't imported here; rely on the refreshed list. Reset.
+    setAiResults([]); setAiSearched(false); setAiPrompt("");
   }
 
   const filteredProspects = prospects.filter((p) => {
@@ -540,6 +578,9 @@ export default function WorkflowsPage() {
                   </div>
                 )}
               </div>
+              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 border-violet-500/40 text-violet-300" onClick={() => setAiOpen(true)}>
+                <Sparkles className="h-3.5 w-3.5" />AI find
+              </Button>
               <p className="text-xs text-muted-foreground ml-auto">
                 {includedCount} of {prospects.length} selected
               </p>
@@ -645,6 +686,66 @@ export default function WorkflowsPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* AI find dialog — describe the writers you want, search the whole database */}
+      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-violet-400" />AI find prospects</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-xs text-muted-foreground">Describe the writers you want in plain English — the topics, tools, art types, or industries they cover. We pull out keywords and search <b>all</b> prospects across every campaign.</p>
+            <Textarea
+              placeholder={"e.g. writers who cover AI video generation for marketers and ecommerce, or people who wrote about Midjourney and product photography"}
+              className="min-h-[90px]"
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+            />
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-sm"><Checkbox checked={aiIncludeContacted} onCheckedChange={(v) => setAiIncludeContacted(!!v)} />Include people already contacted</label>
+              <label className="flex items-center gap-2 text-sm"><Checkbox checked={aiIncludeGuessed} onCheckedChange={(v) => setAiIncludeGuessed(!!v)} />Include guessed emails (not just verified)</label>
+              <p className="text-[11px] text-muted-foreground">Only people who have an email are returned.</p>
+            </div>
+            <Button size="sm" className="gap-1.5" onClick={runAiSearch} disabled={aiSearching || !aiPrompt.trim()}>
+              {aiSearching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}Search
+            </Button>
+
+            {aiKeywords.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <span className="text-[11px] text-muted-foreground">keywords:</span>
+                {aiKeywords.map((k) => <span key={k} className="text-[11px] bg-violet-500/10 text-violet-300 border border-violet-500/20 px-1.5 py-0.5 rounded-full">{k}</span>)}
+              </div>
+            )}
+            {aiSearched && (
+              <div className="border border-border rounded-md max-h-64 overflow-y-auto divide-y divide-border">
+                {aiSearching ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground p-4"><Loader2 className="h-4 w-4 animate-spin" />Searching the database…</div>
+                ) : aiResults.length === 0 ? (
+                  <p className="p-4 text-sm text-muted-foreground text-center">No matching prospects with an email. Try broader wording or enable guessed emails.</p>
+                ) : aiResults.map((r: any) => {
+                  const mail = (r.contacts ?? []).find((c: any) => c.type === "mailto");
+                  const guessed = mail && isGuessSource(mail.source);
+                  return (
+                    <div key={r.author.id} className="flex items-center gap-2 px-3 py-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm truncate">{r.author.full_name}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{r.domain?.name ?? r.domain?.host ?? "—"}{r.score?.composite != null ? ` · ${Math.round(r.score.composite)}pt` : ""}</p>
+                      </div>
+                      {mail && <span className={`text-[10px] inline-flex items-center gap-1 rounded px-1 ${guessed ? "text-amber-400 border border-amber-500/40" : "text-emerald-400 border border-emerald-500/40"}`}><Mail className="h-2.5 w-2.5" />{guessed ? "guessed" : "email"}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAiOpen(false)}>Close</Button>
+            <Button onClick={addAllAi} disabled={aiAdding || aiResults.length === 0 || !selected} className="gap-1.5">
+              {aiAdding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Add all {aiResults.length > 0 ? `(${aiResults.length}${aiTotal > aiResults.length ? ` of ${aiTotal}` : ""})` : ""} to workflow
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {drawer}
     </div>

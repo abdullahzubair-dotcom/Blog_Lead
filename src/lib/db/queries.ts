@@ -436,9 +436,12 @@ export async function getProspects(opts: {
   sortBy?: "composite" | "freshness" | "authority" | "relevance";
   campaignId?: string;
   excludeDiscarded?: boolean;
+  restrictIds?: string[];   // limit results to this author-id set (AND) — used by AI search
+  excludeIds?: string[];    // drop these author ids from results (e.g. already-contacted)
 }): Promise<{ prospects: ProspectCard[]; total: number }> {
   const limit = opts.limit ?? 24;
   const offset = opts.offset ?? 0;
+  const excludeSet = new Set(opts.excludeIds ?? []);
 
   // ─── Collect author ID sets from each active filter ───────────────────────
   // Each filter produces a Set<string> of matching author IDs.
@@ -472,6 +475,9 @@ export async function getProspects(opts: {
     );
     filterSets.push(new Set(rows.map((r) => r.id)));
   }
+
+  // Restrict to an explicit author-id set (AI search hands in keyword-matched authors).
+  if (opts.restrictIds) filterSets.push(new Set(opts.restrictIds));
 
   // Tool filter: authors who have an article that mentions this tool
   if (opts.tool && opts.tool !== "all") {
@@ -582,19 +588,19 @@ export async function getProspects(opts: {
 
   if (scoreSortedIds.length > 0) {
     // Authors with scores, in sort order, filtered to valid set
-    const ordered = scoreSortedIds.filter(id => validIdSet === null || validIdSet.has(id));
+    const ordered = scoreSortedIds.filter(id => (validIdSet === null || validIdSet.has(id)) && !excludeSet.has(id));
     // Append any authors that have no score row at the end
     if (validIdSet !== null) {
       const withScore = new Set(scoreSortedIds);
       for (const id of validIdSet) {
-        if (!withScore.has(id)) ordered.push(id);
+        if (!withScore.has(id) && !excludeSet.has(id)) ordered.push(id);
       }
     }
     total = ordered.length;
     pageAuthorIds = ordered.slice(offset, offset + limit);
   } else {
     // No scores yet — fall back to valid set or all authors
-    const allValid = validIdSet ? [...validIdSet] : [];
+    const allValid = (validIdSet ? [...validIdSet] : []).filter((id) => !excludeSet.has(id));
     total = allValid.length;
     pageAuthorIds = allValid.slice(offset, offset + limit);
   }
@@ -650,6 +656,63 @@ export async function getProspects(opts: {
   });
 
   return { prospects, total };
+}
+
+// AI-driven prospect search: given keywords (extracted from a natural-language prompt), find
+// authors across ALL campaigns whose articles / tool-mentions / name / publication match — then
+// hand off to getProspects for scoring, email-status filtering, and card hydration. Only returns
+// people with an email; toggles for including guessed emails and already-contacted people.
+export async function aiProspectSearch(opts: {
+  keywords: string[]; includeContacted?: boolean; includeGuessed?: boolean; limit?: number;
+}): Promise<{ prospects: ProspectCard[]; total: number; matchedAuthors: number }> {
+  // Sanitize for PostgREST .or() (commas/parens/wildcards break the filter grammar).
+  const kws = [...new Set(opts.keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 8);
+  if (kws.length === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
+
+  const authorIds = new Set<string>();
+  const addByArticleIds = async (articleIds: string[]) => {
+    const uniq = [...new Set(articleIds)];
+    for (let i = 0; i < uniq.length; i += 400) {
+      const rows = await fetchAllRows<{ author_id: string }>("article_authors", "author_id", (q) => q.in("article_id", uniq.slice(i, i + 400)));
+      rows.forEach((r) => authorIds.add(r.author_id));
+    }
+  };
+
+  // 1) Articles whose title / excerpt / body text mention any keyword.
+  const artFilter = kws.flatMap((k) => [`title.ilike.%${k}%`, `excerpt.ilike.%${k}%`, `readability_text_excerpt.ilike.%${k}%`]).join(",");
+  const arts = await fetchAllRows<{ id: string }>("articles", "id", (q) => q.or(artFilter)).catch(() => []);
+  await addByArticleIds(arts.map((a) => a.id));
+
+  // 2) Tool mentions matching a keyword (e.g. "runway", "midjourney").
+  const mFilter = kws.map((k) => `tool_name.ilike.%${k}%`).join(",");
+  const ments = await fetchAllRows<{ article_id: string }>("mentions", "article_id", (q) => q.or(mFilter)).catch(() => []);
+  await addByArticleIds(ments.map((m) => m.article_id));
+
+  // 3) Author name / bio.
+  const auFilter = kws.flatMap((k) => [`full_name.ilike.%${k}%`, `bio.ilike.%${k}%`]).join(",");
+  (await fetchAllRows<{ id: string }>("authors", "id", (q) => q.or(auFilter)).catch(() => [])).forEach((r) => authorIds.add(r.id));
+
+  // 4) Publication name → its authors.
+  const dFilter = kws.map((k) => `name.ilike.%${k}%`).join(",");
+  const doms = await fetchAllRows<{ id: string }>("domains", "id", (q) => q.or(dFilter)).catch(() => []);
+  for (let i = 0; i < doms.length; i += 400) {
+    const rows = await fetchAllRows<{ id: string }>("authors", "id", (q) => q.in("primary_domain_id", doms.slice(i, i + 400).map((d) => d.id)));
+    rows.forEach((r) => authorIds.add(r.id));
+  }
+
+  const matchedAuthors = authorIds.size;
+  if (matchedAuthors === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
+
+  const excludeIds = opts.includeContacted ? [] : [...(await getContactedAuthorIds())];
+  const { prospects, total } = await getProspects({
+    restrictIds: [...authorIds],
+    excludeIds,
+    emailStatus: opts.includeGuessed ? "has" : "verified", // always requires an email; guessed optional
+    excludeDiscarded: true,
+    sortBy: "composite",
+    limit: opts.limit ?? 200,
+  });
+  return { prospects, total, matchedAuthors };
 }
 
 // ─── Dashboard Stats ─────────────────────────────────────────────────────────
@@ -929,6 +992,26 @@ export async function saveWorkflowProspects(workflowId: string, prospects: { aut
 
 // Add ONE author to a workflow (from the search-and-add box). Idempotent: re-adds as
 // included if already present, else appends after the last-ranked prospect.
+// Bulk-add many authors to a workflow (AI find → "add all"). Skips ones already present,
+// re-includes any that were excluded, ranks the rest after the current max.
+export async function addWorkflowProspects(workflowId: string, authorIds: string[]): Promise<number> {
+  const ids = [...new Set(authorIds)];
+  if (ids.length === 0) return 0;
+  const { data: existing } = await supabaseAdmin
+    .from("workflow_prospects").select("id, author_id").eq("workflow_id", workflowId).in("author_id", ids);
+  const existingByAuthor = new Map((existing ?? []).map((r: any) => [r.author_id, r.id]));
+  const reinclude = [...existingByAuthor.values()];
+  if (reinclude.length) await supabaseAdmin.from("workflow_prospects").update({ included: true }).in("id", reinclude);
+  const { data: maxRow } = await supabaseAdmin
+    .from("workflow_prospects").select("rank").eq("workflow_id", workflowId).order("rank", { ascending: false }).limit(1).maybeSingle();
+  let rank = (((maxRow as any)?.rank as number) ?? 0) + 1;
+  const toInsert = ids.filter((a) => !existingByAuthor.has(a)).map((author_id) => ({ workflow_id: workflowId, author_id, included: true, rank: rank++ }));
+  for (let i = 0; i < toInsert.length; i += 500) {
+    await supabaseAdmin.from("workflow_prospects").insert(toInsert.slice(i, i + 500));
+  }
+  return toInsert.length;
+}
+
 export async function addWorkflowProspect(workflowId: string, authorId: string): Promise<void> {
   const { data: existing } = await supabaseAdmin
     .from("workflow_prospects").select("id").eq("workflow_id", workflowId).eq("author_id", authorId).maybeSingle();

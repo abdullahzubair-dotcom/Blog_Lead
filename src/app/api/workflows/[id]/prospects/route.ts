@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getWorkflowProspects, addWorkflowProspect, setWorkflowProspectsIncluded } from "@/lib/db/queries";
+import { getWorkflowProspects, addWorkflowProspect, addWorkflowProspects, setWorkflowProspectsIncluded } from "@/lib/db/queries";
 
 export async function GET(
   req: NextRequest,
@@ -25,9 +25,14 @@ export async function POST(
 ) {
   const { id } = await params;
   try {
-    const { author_id } = await req.json();
-    if (!author_id) return NextResponse.json({ error: "author_id required" }, { status: 400 });
-    await addWorkflowProspect(id, author_id);
+    const body = await req.json();
+    // Bulk add (AI find → "add all"): { author_ids: [...] }
+    if (Array.isArray(body.author_ids)) {
+      const added = await addWorkflowProspects(id, body.author_ids.filter(Boolean));
+      return NextResponse.json({ ok: true, added });
+    }
+    if (!body.author_id) return NextResponse.json({ error: "author_id required" }, { status: 400 });
+    await addWorkflowProspect(id, body.author_id);
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

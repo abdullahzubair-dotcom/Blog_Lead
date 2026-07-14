@@ -609,6 +609,16 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       emit("learn", `Learning phase error: ${e?.message ?? "unknown"}`);
     }
 
+    // ─── Auto email-finder: kick off a finding run for the authors this discovery produced,
+    // in a fresh invocation (QStash), so their emails get dug out automatically without a
+    // human clicking "Find emails". only_new = just the brand-new authors, to save API credits.
+    if (!signal.aborted) {
+      try {
+        const handed = await qstashPublish("/api/enrich/run", { campaign_id: options?.campaignId, only_new: true, auto: true });
+        emit("learn", handed ? "Kicking off automatic email finding for new authors…" : "Discovery done — run the Email Finder to dig out emails.");
+      } catch { /* non-fatal */ }
+    }
+
     emit("complete", `All done! ${stats.processed} articles processed, ${stats.authors} author profiles built, ${stats.hitsDiscovered} total hits.`);
     await deleteCheckpoint(run.id); // clean up — no need to resume a successful run
     finishBuffer();
