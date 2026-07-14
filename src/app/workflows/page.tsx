@@ -714,7 +714,7 @@ export default function WorkflowsPage() {
 
       {/* AI find dialog — describe the writers you want, search the whole database */}
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
-        <DialogContent className="max-h-[88vh] overflow-y-auto" style={{ maxWidth: "min(94vw, 40rem)" }}>
+        <DialogContent className="max-w-[40rem]! w-[calc(100vw-2rem)]! max-h-[88vh] overflow-y-auto overflow-x-hidden" style={{ maxWidth: "40rem", width: "calc(100vw - 2rem)" }}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-violet-400" />AI find prospects</DialogTitle>
           </DialogHeader>
