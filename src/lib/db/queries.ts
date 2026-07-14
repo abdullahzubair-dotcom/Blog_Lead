@@ -671,7 +671,7 @@ export async function aiProspectSearch(opts: {
   keywords: string[]; includeContacted?: boolean; includeGuessed?: boolean; limit?: number;
 }): Promise<{ prospects: ProspectCard[]; total: number; matchedAuthors: number }> {
   // Sanitize for PostgREST .or() (commas/parens/wildcards break the filter grammar).
-  const kws = [...new Set(opts.keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 8);
+  const kws = [...new Set(opts.keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 12);
   if (kws.length === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
 
   const authorIds = new Set<string>();  // all candidates (any match)

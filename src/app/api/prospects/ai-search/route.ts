@@ -10,7 +10,7 @@ export const maxDuration = 120;
 //   body: { prompt, includeContacted?, includeGuessed?, limit? }
 async function extractKeywords(prompt: string): Promise<string[]> {
   const key = process.env.OPENROUTER_API_KEY;
-  const naive = () => [...new Set(prompt.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w)))].slice(0, 8);
+  const naive = () => [...new Set(prompt.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length > 3 && !STOP.has(w)))].slice(0, 12);
   if (!key || key.length < 20) return naive();
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -18,18 +18,23 @@ async function extractKeywords(prompt: string): Promise<string[]> {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "anthropic/claude-haiku-4-5",
-        messages: [{ role: "user", content: `We search a database of writers by the topics/tools/industries their articles cover. Extract search keywords from the request below.
+        messages: [{ role: "user", content: `We search a database of writers by the topics/tools/industries their articles cover, using keyword matching against article titles, article text, and detected tool names. Extract a GENEROUS set of search keywords from the request so we find plenty of relevant writers.
 
-HARD RULES:
-- Keep named products/tools/brands EXACTLY as written — NEVER split or reinterpret them. "Seedance" is an AI video tool; do NOT turn it into "dance"/"dance videos". "Midjourney" stays "midjourney", not "journey".
-- Only output terms explicitly in the request or unambiguously part of it. Do NOT invent tangential topics (e.g. don't add "viral videos", "social media", "video content" just because a tool makes videos).
-- Prefer SPECIFIC named entities (tools, publications, art/media types, industries). Avoid vague generic words that match everything.
-- 2 to 6 keywords, lowercase, 1-3 words each, no punctuation.
+Include:
+- the core topic/tool phrases from the request,
+- shorter variants and common synonyms (e.g. "ai video generation" → also "ai video", "text to video", "video generator"),
+- closely-related well-known tools/brands in that exact space that a matching article would name (e.g. for AI video: runway, sora, pika, kling, synthesia, heygen, luma; for AI image: midjourney, dall-e, stable diffusion, flux, ideogram),
+- relevant subtopics / art or media types / industries mentioned.
+
+RULES:
+- Keep named products EXACTLY as written — NEVER fragment a product name into a misleading word ("Seedance" is an AI video tool; do NOT turn it into "dance"). If the request names a specific tool, include that tool AND its close competitors/category.
+- Don't add truly unrelated tangents, but DO err toward breadth within the topic.
+- 6 to 15 keywords, lowercase, 1-3 words each, no punctuation.
 
 Return ONLY a JSON array of strings.
 
 Request: "${prompt}"` }],
-        max_tokens: 200, temperature: 0.1,
+        max_tokens: 300, temperature: 0.3,
       }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -39,7 +44,7 @@ Request: "${prompt}"` }],
     const m = txt.match(/\[[\s\S]*\]/);
     const arr = m ? JSON.parse(m[0]) : [];
     const kws = (Array.isArray(arr) ? arr : []).map((s: any) => String(s).trim()).filter(Boolean);
-    return kws.length ? kws.slice(0, 8) : naive();
+    return kws.length ? kws.slice(0, 12) : naive();
   } catch { return naive(); }
 }
 const STOP = new Set(["that", "they", "them", "with", "have", "want", "type", "kind", "list", "people", "author", "authors", "writer", "writers", "written", "about", "which", "from", "these", "those", "their", "would", "there", "email", "emails"]);

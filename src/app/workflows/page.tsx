@@ -757,7 +757,7 @@ export default function WorkflowsPage() {
                     // The article that references the search terms — so you can verify the match.
                     const kw = aiKeywords.map((k) => k.toLowerCase());
                     const arts = r.articles ?? [];
-                    const ref = arts.find((a: any) => kw.some((k) => `${a.title ?? ""} ${a.excerpt ?? ""}`.toLowerCase().includes(k)))
+                    const ref = arts.find((a: any) => kw.some((k) => `${a.title ?? ""} ${a.excerpt ?? ""} ${a.readability_text_excerpt ?? ""}`.toLowerCase().includes(k)))
                       ?? [...arts].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
                     return (
                       <div key={r.author.id} className="flex items-center gap-2 px-3 py-2">
