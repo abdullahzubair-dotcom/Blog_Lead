@@ -18,8 +18,18 @@ async function extractKeywords(prompt: string): Promise<string[]> {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "anthropic/claude-haiku-4-5",
-        messages: [{ role: "user", content: `We search a database of writers/journalists by the topics, AI tools, art types, and industries their articles cover. From the request below, extract 4-8 short search keywords (tool names, art/media types, verticals, topics) — lowercase, 1-3 words each, no punctuation. Return ONLY a JSON array of strings.\n\nRequest: "${prompt}"` }],
-        max_tokens: 200, temperature: 0.3,
+        messages: [{ role: "user", content: `We search a database of writers by the topics/tools/industries their articles cover. Extract search keywords from the request below.
+
+HARD RULES:
+- Keep named products/tools/brands EXACTLY as written — NEVER split or reinterpret them. "Seedance" is an AI video tool; do NOT turn it into "dance"/"dance videos". "Midjourney" stays "midjourney", not "journey".
+- Only output terms explicitly in the request or unambiguously part of it. Do NOT invent tangential topics (e.g. don't add "viral videos", "social media", "video content" just because a tool makes videos).
+- Prefer SPECIFIC named entities (tools, publications, art/media types, industries). Avoid vague generic words that match everything.
+- 2 to 6 keywords, lowercase, 1-3 words each, no punctuation.
+
+Return ONLY a JSON array of strings.
+
+Request: "${prompt}"` }],
+        max_tokens: 200, temperature: 0.1,
       }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -44,7 +54,7 @@ export async function POST(req: NextRequest) {
       keywords,
       includeContacted: body.includeContacted === true,
       includeGuessed: body.includeGuessed === true,
-      limit: Math.min(500, parseInt(body.limit, 10) || 200),
+      limit: Math.min(1000, parseInt(body.limit, 10) || 500), // return lots by default
     });
     return NextResponse.json({ keywords, prospects, total, matchedAuthors });
   } catch (e: any) {

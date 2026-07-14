@@ -438,10 +438,12 @@ export async function getProspects(opts: {
   excludeDiscarded?: boolean;
   restrictIds?: string[];   // limit results to this author-id set (AND) — used by AI search
   excludeIds?: string[];    // drop these author ids from results (e.g. already-contacted)
+  priorityIds?: string[];   // float these to the top (composite order preserved within) — strong AI-search matches
 }): Promise<{ prospects: ProspectCard[]; total: number }> {
   const limit = opts.limit ?? 24;
   const offset = opts.offset ?? 0;
   const excludeSet = new Set(opts.excludeIds ?? []);
+  const prioritySet = new Set(opts.priorityIds ?? []);
 
   // ─── Collect author ID sets from each active filter ───────────────────────
   // Each filter produces a Set<string> of matching author IDs.
@@ -596,11 +598,14 @@ export async function getProspects(opts: {
         if (!withScore.has(id) && !excludeSet.has(id)) ordered.push(id);
       }
     }
-    total = ordered.length;
-    pageAuthorIds = ordered.slice(offset, offset + limit);
+    // Float priority ids to the top (composite order preserved within each group).
+    const finalOrder = prioritySet.size ? [...ordered.filter((id) => prioritySet.has(id)), ...ordered.filter((id) => !prioritySet.has(id))] : ordered;
+    total = finalOrder.length;
+    pageAuthorIds = finalOrder.slice(offset, offset + limit);
   } else {
     // No scores yet — fall back to valid set or all authors
-    const allValid = (validIdSet ? [...validIdSet] : []).filter((id) => !excludeSet.has(id));
+    let allValid = (validIdSet ? [...validIdSet] : []).filter((id) => !excludeSet.has(id));
+    if (prioritySet.size) allValid = [...allValid.filter((id) => prioritySet.has(id)), ...allValid.filter((id) => !prioritySet.has(id))];
     total = allValid.length;
     pageAuthorIds = allValid.slice(offset, offset + limit);
   }
@@ -669,30 +674,38 @@ export async function aiProspectSearch(opts: {
   const kws = [...new Set(opts.keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 8);
   if (kws.length === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
 
-  const authorIds = new Set<string>();
-  const addByArticleIds = async (articleIds: string[]) => {
+  const authorIds = new Set<string>();  // all candidates (any match)
+  const strongIds = new Set<string>();  // wrote about it directly (tool mention or article TITLE) → rank first
+  const authorsForArticles = async (articleIds: string[]): Promise<string[]> => {
     const uniq = [...new Set(articleIds)];
+    const out: string[] = [];
     for (let i = 0; i < uniq.length; i += 400) {
       const rows = await fetchAllRows<{ author_id: string }>("article_authors", "author_id", (q) => q.in("article_id", uniq.slice(i, i + 400)));
-      rows.forEach((r) => authorIds.add(r.author_id));
+      out.push(...rows.map((r) => r.author_id));
     }
+    return out;
   };
 
-  // 1) Articles whose title / excerpt / body text mention any keyword.
-  const artFilter = kws.flatMap((k) => [`title.ilike.%${k}%`, `excerpt.ilike.%${k}%`, `readability_text_excerpt.ilike.%${k}%`]).join(",");
-  const arts = await fetchAllRows<{ id: string }>("articles", "id", (q) => q.or(artFilter)).catch(() => []);
-  await addByArticleIds(arts.map((a) => a.id));
+  // 1a) STRONG: article TITLE mentions a keyword (they clearly wrote about it).
+  const titleFilter = kws.map((k) => `title.ilike.%${k}%`).join(",");
+  const titleArts = await fetchAllRows<{ id: string }>("articles", "id", (q) => q.or(titleFilter)).catch(() => []);
+  for (const a of await authorsForArticles(titleArts.map((a) => a.id))) { authorIds.add(a); strongIds.add(a); }
 
-  // 2) Tool mentions matching a keyword (e.g. "runway", "midjourney").
+  // 1b) WEAK: article excerpt / body text mentions a keyword.
+  const bodyFilter = kws.flatMap((k) => [`excerpt.ilike.%${k}%`, `readability_text_excerpt.ilike.%${k}%`]).join(",");
+  const bodyArts = await fetchAllRows<{ id: string }>("articles", "id", (q) => q.or(bodyFilter)).catch(() => []);
+  for (const a of await authorsForArticles(bodyArts.map((a) => a.id))) authorIds.add(a);
+
+  // 2) STRONG: tool mentions matching a keyword (e.g. "seedance", "midjourney").
   const mFilter = kws.map((k) => `tool_name.ilike.%${k}%`).join(",");
   const ments = await fetchAllRows<{ article_id: string }>("mentions", "article_id", (q) => q.or(mFilter)).catch(() => []);
-  await addByArticleIds(ments.map((m) => m.article_id));
+  for (const a of await authorsForArticles(ments.map((m) => m.article_id))) { authorIds.add(a); strongIds.add(a); }
 
-  // 3) Author name / bio.
+  // 3) WEAK: author name / bio.
   const auFilter = kws.flatMap((k) => [`full_name.ilike.%${k}%`, `bio.ilike.%${k}%`]).join(",");
   (await fetchAllRows<{ id: string }>("authors", "id", (q) => q.or(auFilter)).catch(() => [])).forEach((r) => authorIds.add(r.id));
 
-  // 4) Publication name → its authors.
+  // 4) WEAK: publication name → its authors.
   const dFilter = kws.map((k) => `name.ilike.%${k}%`).join(",");
   const doms = await fetchAllRows<{ id: string }>("domains", "id", (q) => q.or(dFilter)).catch(() => []);
   for (let i = 0; i < doms.length; i += 400) {
@@ -707,6 +720,7 @@ export async function aiProspectSearch(opts: {
   const { prospects, total } = await getProspects({
     restrictIds: [...authorIds],
     excludeIds,
+    priorityIds: [...strongIds], // writers who actually covered the tool/topic float to the top
     emailStatus: opts.includeGuessed ? "has" : "verified", // always requires an email; guessed optional
     excludeDiscarded: true,
     sortBy: "composite",
@@ -1010,6 +1024,17 @@ export async function addWorkflowProspects(workflowId: string, authorIds: string
     await supabaseAdmin.from("workflow_prospects").insert(toInsert.slice(i, i + 500));
   }
   return toInsert.length;
+}
+
+// Remove ONE prospect from a workflow entirely (not just exclude).
+export async function removeWorkflowProspect(workflowId: string, authorId: string): Promise<void> {
+  await supabaseAdmin.from("workflow_prospects").delete().eq("workflow_id", workflowId).eq("author_id", authorId);
+}
+
+// Remove ALL prospects from a workflow.
+export async function removeAllWorkflowProspects(workflowId: string): Promise<number> {
+  const { data } = await supabaseAdmin.from("workflow_prospects").delete().eq("workflow_id", workflowId).select("id");
+  return (data ?? []).length;
 }
 
 export async function addWorkflowProspect(workflowId: string, authorId: string): Promise<void> {

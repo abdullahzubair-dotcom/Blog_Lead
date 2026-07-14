@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getWorkflowProspects, addWorkflowProspect, addWorkflowProspects, setWorkflowProspectsIncluded } from "@/lib/db/queries";
+import { getWorkflowProspects, addWorkflowProspect, addWorkflowProspects, setWorkflowProspectsIncluded, removeAllWorkflowProspects } from "@/lib/db/queries";
 
 export async function GET(
   req: NextRequest,
@@ -50,6 +50,20 @@ export async function PATCH(
     const { included, author_ids } = await req.json();
     await setWorkflowProspectsIncluded(id, included === true, Array.isArray(author_ids) ? author_ids : undefined);
     return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+// DELETE — remove ALL prospects from this workflow.
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  try {
+    const removed = await removeAllWorkflowProspects(id);
+    return NextResponse.json({ ok: true, removed });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

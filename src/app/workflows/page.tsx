@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download, Sparkles, Mail } from "lucide-react";
+import { GitBranch, Plus, Loader2, Play, CheckCircle2, Filter, Search, ChevronRight, Link2, UserPlus, Download, Sparkles, Mail, ExternalLink, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -131,11 +131,13 @@ function ProspectRow({
   p,
   onToggle,
   onOpen,
+  onRemove,
   contacted,
 }: {
   p: WorkflowProspect;
   onToggle: (authorId: string, included: boolean) => void;
   onOpen: (authorId: string) => void;
+  onRemove?: (authorId: string) => void;
   contacted?: boolean;
 }) {
   const score = p.score?.composite ?? null;
@@ -190,6 +192,11 @@ function ProspectRow({
           </span>
         )}
         <span className="text-xs text-muted-foreground w-4 text-right">#{p.rank}</span>
+        {onRemove && (
+          <button onClick={(e) => { e.stopPropagation(); onRemove(p.author_id); }} title="Remove from workflow" className="text-muted-foreground hover:text-red-400 shrink-0">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -318,6 +325,21 @@ export default function WorkflowsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ included }),
     });
+  }
+
+  // Remove ONE prospect from the workflow entirely (not just deselect).
+  async function removeProspect(authorId: string) {
+    if (!selected) return;
+    setProspects((ps) => ps.filter((p) => p.author_id !== authorId));
+    await fetch(`/api/workflows/${selected.id}/prospects/${authorId}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  // Remove ALL prospects from the workflow.
+  async function removeAll() {
+    if (!selected || prospects.length === 0) return;
+    if (!confirm(`Remove all ${prospects.length} prospects from "${selected.name}"? This clears the list (it doesn't delete the authors).`)) return;
+    setProspects([]);
+    await fetch(`/api/workflows/${selected.id}/prospects`, { method: "DELETE" }).catch(() => {});
   }
 
   // Select all / Deselect all — ONE bulk request instead of a PATCH per prospect.
@@ -596,6 +618,9 @@ export default function WorkflowsPage() {
               >
                 {prospects.length > 0 && prospects.every((p) => p.included) ? "Deselect all" : "Select all"}
               </Button>
+              <Button variant="ghost" size="sm" className="h-7 text-xs text-red-400 hover:text-red-300 gap-1" disabled={prospects.length === 0} onClick={removeAll}>
+                <Trash2 className="h-3.5 w-3.5" />Remove all
+              </Button>
             </div>
 
             {/* Prospect list */}
@@ -620,7 +645,7 @@ export default function WorkflowsPage() {
               ) : (
                 <div>
                   {filteredProspects.map((p) => (
-                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} onOpen={openAuthor} contacted={contactedElsewhere.has(p.author_id)} />
+                    <ProspectRow key={p.id} p={p} onToggle={toggleProspect} onOpen={openAuthor} onRemove={removeProspect} contacted={contactedElsewhere.has(p.author_id)} />
                   ))}
                 </div>
               )}
@@ -689,7 +714,7 @@ export default function WorkflowsPage() {
 
       {/* AI find dialog — describe the writers you want, search the whole database */}
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-violet-400" />AI find prospects</DialogTitle>
           </DialogHeader>
@@ -717,25 +742,41 @@ export default function WorkflowsPage() {
               </div>
             )}
             {aiSearched && (
-              <div className="border border-border rounded-md max-h-64 overflow-y-auto divide-y divide-border">
-                {aiSearching ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground p-4"><Loader2 className="h-4 w-4 animate-spin" />Searching the database…</div>
-                ) : aiResults.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground text-center">No matching prospects with an email. Try broader wording or enable guessed emails.</p>
-                ) : aiResults.map((r: any) => {
-                  const mail = (r.contacts ?? []).find((c: any) => c.type === "mailto");
-                  const guessed = mail && isGuessSource(mail.source);
-                  return (
-                    <div key={r.author.id} className="flex items-center gap-2 px-3 py-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm truncate">{r.author.full_name}</p>
-                        <p className="text-[11px] text-muted-foreground truncate">{r.domain?.name ?? r.domain?.host ?? "—"}{r.score?.composite != null ? ` · ${Math.round(r.score.composite)}pt` : ""}</p>
+              <>
+                {!aiSearching && aiResults.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">{aiTotal} matching prospect{aiTotal === 1 ? "" : "s"} with an email{aiTotal > aiResults.length ? ` (showing ${aiResults.length})` : ""}.</p>
+                )}
+                <div className="border border-border rounded-md max-h-[420px] overflow-y-auto divide-y divide-border">
+                  {aiSearching ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground p-4"><Loader2 className="h-4 w-4 animate-spin" />Searching the database…</div>
+                  ) : aiResults.length === 0 ? (
+                    <p className="p-4 text-sm text-muted-foreground text-center">No matching prospects with an email. Try broader wording or enable guessed emails.</p>
+                  ) : aiResults.map((r: any) => {
+                    const mail = (r.contacts ?? []).find((c: any) => c.type === "mailto");
+                    const guessed = mail && isGuessSource(mail.source);
+                    // The article that references the search terms — so you can verify the match.
+                    const kw = aiKeywords.map((k) => k.toLowerCase());
+                    const arts = r.articles ?? [];
+                    const ref = arts.find((a: any) => kw.some((k) => `${a.title ?? ""} ${a.excerpt ?? ""}`.toLowerCase().includes(k)))
+                      ?? [...arts].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
+                    return (
+                      <div key={r.author.id} className="flex items-center gap-2 px-3 py-2">
+                        <div className="flex-1 min-w-0">
+                          <button onClick={() => openAuthor(r.author.id)} className="text-sm truncate hover:text-violet-400 hover:underline text-left">{r.author.full_name}</button>
+                          <p className="text-[11px] text-muted-foreground truncate">{r.domain?.name ?? r.domain?.host ?? "—"}{r.score?.composite != null ? ` · ${Math.round(r.score.composite)}pt` : ""}</p>
+                          {ref?.title && <p className="text-[11px] text-muted-foreground/70 truncate italic">“{ref.title}”</p>}
+                        </div>
+                        {ref?.url_canonical && (
+                          <a href={ref.url_canonical} target="_blank" rel="noreferrer" title="Open the referencing article" className="shrink-0 inline-flex items-center gap-1 text-[10px] text-violet-400 hover:underline border border-violet-500/30 rounded px-1.5 py-0.5">
+                            article<ExternalLink className="h-2.5 w-2.5" />
+                          </a>
+                        )}
+                        {mail && <span className={`text-[10px] inline-flex items-center gap-1 rounded px-1 shrink-0 ${guessed ? "text-amber-400 border border-amber-500/40" : "text-emerald-400 border border-emerald-500/40"}`}><Mail className="h-2.5 w-2.5" />{guessed ? "guessed" : "email"}</span>}
                       </div>
-                      {mail && <span className={`text-[10px] inline-flex items-center gap-1 rounded px-1 ${guessed ? "text-amber-400 border border-amber-500/40" : "text-emerald-400 border border-emerald-500/40"}`}><Mail className="h-2.5 w-2.5" />{guessed ? "guessed" : "email"}</span>}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
           <DialogFooter>
