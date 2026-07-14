@@ -714,7 +714,7 @@ export default function WorkflowsPage() {
 
       {/* AI find dialog — describe the writers you want, search the whole database */}
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
-        <DialogContent className="max-w-[40rem]! w-[calc(100vw-2rem)]! max-h-[88vh] overflow-y-auto overflow-x-hidden" style={{ maxWidth: "40rem", width: "calc(100vw - 2rem)" }}>
+        <DialogContent className="max-w-[40rem]! w-[calc(100vw-2rem)]! max-h-[88vh] overflow-y-auto" style={{ maxWidth: "40rem", width: "calc(100vw - 2rem)" }}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-violet-400" />AI find prospects</DialogTitle>
           </DialogHeader>
@@ -760,11 +760,11 @@ export default function WorkflowsPage() {
                     const ref = arts.find((a: any) => kw.some((k) => `${a.title ?? ""} ${a.excerpt ?? ""} ${a.readability_text_excerpt ?? ""}`.toLowerCase().includes(k)))
                       ?? [...arts].sort((a: any, b: any) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))[0];
                     return (
-                      <div key={r.author.id} className="flex items-center gap-2 px-3 py-2">
+                      <div key={r.author.id} className="flex items-start gap-2 px-3 py-2">
                         <div className="flex-1 min-w-0">
-                          <button onClick={() => openAuthor(r.author.id)} className="text-sm truncate hover:text-violet-400 hover:underline text-left">{r.author.full_name}</button>
-                          <p className="text-[11px] text-muted-foreground truncate">{r.domain?.name ?? r.domain?.host ?? "—"}{r.score?.composite != null ? ` · ${Math.round(r.score.composite)}pt` : ""}</p>
-                          {ref?.title && <p className="text-[11px] text-muted-foreground/70 truncate italic">“{ref.title}”</p>}
+                          <button onClick={() => openAuthor(r.author.id)} className="block text-sm break-words hover:text-violet-400 hover:underline text-left">{r.author.full_name}</button>
+                          <p className="text-[11px] text-muted-foreground break-words">{r.domain?.name ?? r.domain?.host ?? "—"}{r.score?.composite != null ? ` · ${Math.round(r.score.composite)}pt` : ""}</p>
+                          {ref?.title && <p className="text-[11px] text-muted-foreground/70 break-words italic">“{ref.title}”</p>}
                         </div>
                         {ref?.url_canonical && (
                           <a href={ref.url_canonical} target="_blank" rel="noreferrer" title="Open the referencing article" className="shrink-0 inline-flex items-center gap-1 text-[10px] text-violet-400 hover:underline border border-violet-500/30 rounded px-1.5 py-0.5">
