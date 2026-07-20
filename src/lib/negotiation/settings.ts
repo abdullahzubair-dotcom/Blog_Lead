@@ -12,10 +12,15 @@ export interface PricingRule {
   label?: string;
 }
 
+export type Aggressiveness = "gentle" | "balanced" | "firm";
+
 export interface NegotiationSettings {
   ai_autonomy: boolean;       // false = AI drafts for human approval; true = AI sends on its own
   handbook: string;           // the negotiation brief / criteria the model follows
   tone: string;
+  aggressiveness: Aggressiveness; // how hard/fast the AI pushes and concedes
+  opening_percent: number;    // where in [floor..ceiling] the AI opens (e.g. 40 = 40%)
+  style_rules: string;        // hard writing rules for every generated email (e.g. no em dashes)
   max_thread_length: number;  // max AI messages in a thread before it escalates to a human
   min_price: number;          // floor: never offer/accept below this
   currency: string;
@@ -32,6 +37,9 @@ export const DEFAULT_NEGOTIATION_SETTINGS: NegotiationSettings = {
     "price using the pricing tiers (based on the site's Domain Rating + US traffic). Start at the low end and move up in small steps " +
     "only if needed, never above the tier ceiling or below the floor. Keep it human and short. If they clearly decline, thank them and stop.",
   tone: "Warm, concise, human, professional. Never pushy or robotic.",
+  aggressiveness: "balanced",
+  opening_percent: 40,
+  style_rules: "Plain text only. Never use em dashes or en dashes; use commas or periods instead. No bracketed placeholders. Keep it short and human.",
   max_thread_length: 4,
   min_price: 0,
   currency: "USD",
@@ -62,7 +70,7 @@ export async function getNegotiationSettings(): Promise<NegotiationSettings> {
 
 export async function saveNegotiationSettings(patch: Partial<NegotiationSettings>): Promise<NegotiationSettings> {
   const row: any = { id: true, updated_at: new Date().toISOString() };
-  for (const k of ["ai_autonomy", "handbook", "tone", "max_thread_length", "min_price", "currency", "anti_highball"] as const) {
+  for (const k of ["ai_autonomy", "handbook", "tone", "aggressiveness", "opening_percent", "style_rules", "max_thread_length", "min_price", "currency", "anti_highball"] as const) {
     if (patch[k] !== undefined) row[k] = patch[k];
   }
   if (patch.pricing_rules !== undefined) row.pricing_rules = JSON.stringify(patch.pricing_rules);

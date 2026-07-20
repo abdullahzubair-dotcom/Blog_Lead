@@ -15,6 +15,7 @@ interface PricingRule { min_dr?: number; min_traffic?: number; min_us_share?: nu
 interface Settings {
   ai_autonomy: boolean; handbook: string; tone: string; max_thread_length: number;
   min_price: number; currency: string; anti_highball: string; pricing_rules: PricingRule[];
+  aggressiveness: "gentle" | "balanced" | "firm"; opening_percent: number; style_rules: string;
 }
 
 export default function HandbookPage() {
@@ -103,6 +104,38 @@ export default function HandbookPage() {
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">Currency</Label>
               <Input value={s.currency} onChange={(e) => set("currency", e.target.value)} />
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Strategy & style */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Strategy &amp; style</CardTitle><CardDescription>How hard to push, where to open in the price range, and hard writing rules for every email.</CardDescription></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">How aggressive</Label>
+            <div className="flex gap-2">
+              {(["gentle", "balanced", "firm"] as const).map((a) => (
+                <Button key={a} type="button" variant={s.aggressiveness === a ? "default" : "outline"} size="sm"
+                  className={s.aggressiveness === a ? "bg-violet-600 hover:bg-violet-700 text-white capitalize" : "capitalize"}
+                  onClick={() => set("aggressiveness", a)}>{a}</Button>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {s.aggressiveness === "gentle" ? "Concede slowly, settle low, lean to free inclusion if they hesitate."
+                : s.aggressiveness === "firm" ? "Hold near the opening number, concede minimally, approach the ceiling only for high-value placements."
+                : "Move in modest steps and land comfortably under the ceiling."}
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Open at {s.opening_percent}% of the range</Label>
+            <input type="range" min={0} max={100} step={5} value={s.opening_percent} onChange={(e) => set("opening_percent", parseInt(e.target.value))} className="w-full accent-violet-600" />
+            <p className="text-[11px] text-muted-foreground">0% opens at the floor, 100% opens at the tier ceiling. Lower opening = more room to negotiate up.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs uppercase tracking-wide text-muted-foreground">Writing rules (applied to every email)</Label>
+            <Textarea rows={3} value={s.style_rules} onChange={(e) => set("style_rules", e.target.value)} placeholder="e.g. No em dashes. Plain text. Short." />
+            <p className="text-[11px] text-muted-foreground">These are enforced on top of an automatic em dash and en dash strip on every generated email.</p>
           </div>
         </CardContent>
       </Card>

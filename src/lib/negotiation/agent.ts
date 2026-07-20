@@ -19,6 +19,26 @@ async function llm(prompt: string, maxTokens = 400, temperature = 0.4): Promise<
   }
 }
 
+// Enforce "no em/en dashes" (and tidy spacing) on every generated email, regardless of what
+// the model returns. em dash and en dash become commas; stray doubles get cleaned up.
+function sanitizeBody(s: string): string {
+  return s
+    .replace(/\s*[—–]\s*/g, ", ")
+    .replace(/[—–]/g, ", ")
+    .replace(/ ,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const AGGRESSION: Record<string, string> = {
+  gentle: "Be gentle. Move up slowly and only if they push, prefer settling below the ceiling, and lean toward a free or editorial inclusion if they hesitate on price.",
+  balanced: "Be balanced. Move in modest steps and aim to land comfortably under the ceiling.",
+  firm: "Be firm. Hold close to your opening number, concede minimally and slowly, and only approach the ceiling when the placement is clearly high value.",
+};
+
 export type ReplyIntent =
   | "interested" | "counter_offer" | "accept" | "question"
   | "hard_no" | "unsubscribe" | "auto" | "irrelevant";
@@ -107,28 +127,31 @@ export async function draftNegotiationReply(input: DraftInput): Promise<DraftRes
 
   if (lastIntent === "hard_no" || lastIntent === "unsubscribe") {
     return {
-      body: `Hi ${first},\n\nTotally understand, thanks for letting me know and no worries at all. If anything changes down the line, my door's open. Wishing you well.\n\nBest,\n${signer}`,
+      body: sanitizeBody(`Hi ${first},\n\nTotally understand, thanks for letting me know and no worries at all. If anything changes down the line, my door is open. Wishing you well.\n\nBest,\n${signer}`),
       suggestedOffer: null, shouldStop: true, statusHint: "declined",
     };
   }
 
-  const convo = thread.map((m) => `${m.from === "us" ? "US" : publication.toUpperCase() || "THEM"}: ${m.body}`).join("\n\n---\n\n");
+  const convo = thread.map((m) => `${m.from === "us" ? "US" : publication.toUpperCase() || "THEM"}: ${m.body}`).join("\n\n===\n\n");
+  const openPct = Math.min(100, Math.max(0, settings.opening_percent ?? 40));
+  const opening = ceiling == null ? null : Math.max(floor, Math.round(floor + (ceiling - floor) * (openPct / 100)));
+  const aggr = AGGRESSION[settings.aggressiveness] ?? AGGRESSION.balanced;
   const priceGuidance = ceiling == null
-    ? `This site is below our paid tiers, so DO NOT offer money. Push for a free/editorial inclusion only (relevance, a useful tool for their readers, we can supply assets/quotes).`
-    : `You may offer up to ${settings.currency} ${ceiling} MAXIMUM. Never exceed it. Start at the LOW end (around ${settings.currency} ${Math.max(floor, Math.round(ceiling * 0.4))}) and only move up in small steps if they push back. Floor is ${settings.currency} ${floor}; never go below it. ${settings.anti_highball}`;
+    ? `This site is below our paid tiers, so DO NOT offer money. Push for a free or editorial inclusion only (relevance, a useful tool for their readers, we can supply assets and quotes).`
+    : `You may offer up to ${settings.currency} ${ceiling} MAXIMUM, never more. Open around ${settings.currency} ${opening} and move up only in small steps if they push back. Floor is ${settings.currency} ${floor}; never go below it. ${aggr} ${settings.anti_highball}`;
 
   const out = await llm(
-    `You are negotiating on behalf of ImagineArt via email. Write ONLY the next email body (a reply in an ongoing thread — do not re-introduce yourself fully).
+    `You are negotiating on behalf of ImagineArt via email. Write ONLY the next email body (a reply in an ongoing thread, so do not re-introduce yourself fully).
 
 NEGOTIATION BRIEF (obey): ${settings.handbook}
 TONE: ${settings.tone}
 PRICING: ${priceGuidance}
-${overLength ? "You have already sent several messages — if there's no clear progress, politely propose a quick call or say you'll follow up, and wind down rather than nagging." : ""}
+${overLength ? "You have already sent several messages, so if there is no clear progress, politely propose a quick call or say you will follow up, and wind down rather than nagging." : ""}
 
 HARD RULES:
 - Start with "Hi ${first},". End with "Best,\\n${signer}".
-- Plain text only. No bracketed placeholders. No em/en dashes.
-- 2-5 sentences. Human, specific, not pushy.
+- ${settings.style_rules}
+- 2 to 5 sentences. Human, specific, not pushy.
 - Never promise anything above the ${settings.currency} ${ceiling ?? 0} ceiling or below ${settings.currency} ${floor}.
 
 CONVERSATION SO FAR:
@@ -152,5 +175,5 @@ After the email, on a NEW last line, output exactly: <<META offer=NUMBER_OR_none
   if (suggestedOffer != null && ceiling != null) suggestedOffer = Math.min(suggestedOffer, ceiling);
   if (suggestedOffer != null) suggestedOffer = Math.max(suggestedOffer, floor);
 
-  return { body: body.trim(), suggestedOffer, shouldStop: statusHint === "declined" || statusHint === "agreed", statusHint };
+  return { body: sanitizeBody(body), suggestedOffer, shouldStop: statusHint === "declined" || statusHint === "agreed", statusHint };
 }
