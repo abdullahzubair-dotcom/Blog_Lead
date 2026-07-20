@@ -1485,14 +1485,19 @@ export async function upsertOutreachEmail(data: {
   body?: string;
   status?: string;
 }): Promise<OutreachEmail> {
-  const { data: email, error } = await supabaseAdmin
-    .from("outreach_emails")
-    .upsert(
-      { ...data, kind: "initial", status: data.status ?? "draft" },
-      { onConflict: "workflow_id,author_id,kind" }
-    )
-    .select()
-    .single();
+  // One initial per (workflow, author): update the existing one if present, else insert. (Was
+  // an upsert on the (workflow_id,author_id,kind) unique constraint; that's now a PARTIAL index
+  // excluding 'negotiation', which can't serve as an ON CONFLICT arbiter — the partial index
+  // still guards against duplicate initials.)
+  const { data: existing } = await supabaseAdmin
+    .from("outreach_emails").select("id")
+    .eq("workflow_id", data.workflow_id).eq("author_id", data.author_id).eq("kind", "initial")
+    .maybeSingle();
+  const payload = { ...data, kind: "initial", status: data.status ?? "draft" };
+  const q = existing?.id
+    ? supabaseAdmin.from("outreach_emails").update(payload).eq("id", existing.id)
+    : supabaseAdmin.from("outreach_emails").insert(payload);
+  const { data: email, error } = await q.select().single();
   if (error) throw error;
   return email;
 }
