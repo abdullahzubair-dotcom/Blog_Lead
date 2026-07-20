@@ -667,12 +667,14 @@ export async function getProspects(opts: {
 // authors across ALL campaigns whose articles / tool-mentions / name / publication match — then
 // hand off to getProspects for scoring, email-status filtering, and card hydration. Only returns
 // people with an email; toggles for including guessed emails and already-contacted people.
-export async function aiProspectSearch(opts: {
-  keywords: string[]; includeContacted?: boolean; includeGuessed?: boolean; limit?: number;
-}): Promise<{ prospects: ProspectCard[]; total: number; matchedAuthors: number }> {
+// Match author IDs by keyword across articles (title/body), tool mentions, author name/bio,
+// and publication name. Returns the full candidate set plus the "strong" subset (wrote about
+// it directly — title or tool mention) for ranking. Keywords are capped/sanitized for the
+// PostgREST .or() grammar; pass ≤12 at a time (callers with more should chunk and union).
+export async function matchAuthorIdsByKeywords(keywords: string[]): Promise<{ authorIds: string[]; strongIds: string[] }> {
   // Sanitize for PostgREST .or() (commas/parens/wildcards break the filter grammar).
-  const kws = [...new Set(opts.keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 12);
-  if (kws.length === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
+  const kws = [...new Set(keywords.map((k) => k.replace(/[,()%_*]/g, " ").trim().toLowerCase()).filter((k) => k.length >= 2))].slice(0, 12);
+  if (kws.length === 0) return { authorIds: [], strongIds: [] };
 
   const authorIds = new Set<string>();  // all candidates (any match)
   const strongIds = new Set<string>();  // wrote about it directly (tool mention or article TITLE) → rank first
@@ -712,6 +714,28 @@ export async function aiProspectSearch(opts: {
     const rows = await fetchAllRows<{ id: string }>("authors", "id", (q) => q.in("primary_domain_id", doms.slice(i, i + 400).map((d) => d.id)));
     rows.forEach((r) => authorIds.add(r.id));
   }
+  return { authorIds: [...authorIds], strongIds: [...strongIds] };
+}
+
+// Link a campaign to every author relevant to its keywords (title/body/mention/name/publication
+// match). Chunks keywords so campaigns with dozens of keywords match on ALL of them, not just
+// the first 12. Returns how many authors are now linked. Safe to re-run (idempotent upsert).
+export async function linkCampaignAuthorsByKeywords(campaignId: string, keywords: string[]): Promise<number> {
+  const all = new Set<string>();
+  for (let i = 0; i < keywords.length; i += 10) {
+    const { authorIds } = await matchAuthorIdsByKeywords(keywords.slice(i, i + 10));
+    authorIds.forEach((id) => all.add(id));
+  }
+  if (all.size > 0) await linkAuthorsToCampaign(campaignId, [...all]);
+  return all.size;
+}
+
+export async function aiProspectSearch(opts: {
+  keywords: string[]; includeContacted?: boolean; includeGuessed?: boolean; limit?: number;
+}): Promise<{ prospects: ProspectCard[]; total: number; matchedAuthors: number }> {
+  const matched = await matchAuthorIdsByKeywords(opts.keywords);
+  const authorIds = new Set<string>(matched.authorIds);
+  const strongIds = new Set<string>(matched.strongIds);
 
   const matchedAuthors = authorIds.size;
   if (matchedAuthors === 0) return { prospects: [], total: 0, matchedAuthors: 0 };
