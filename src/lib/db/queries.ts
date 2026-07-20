@@ -2049,6 +2049,23 @@ export async function getUserAppPasswordEnc(userEmail: string): Promise<string |
 export interface SharedSenderRow { email: string; label: string; enabled: boolean; hasPassword: boolean }
 
 // Every configured shared sender, enabled or not — for the Admin management list.
+// Every configured team mailbox (has an app password) — powers the admin inbox switcher.
+export async function getInboxAccounts(): Promise<{ email: string; label: string }[]> {
+  const { data } = await supabaseAdmin
+    .from("user_email_config")
+    .select("user_email, from_name, shared_sender_label, app_password_enc")
+    .not("app_password_enc", "is", null);
+  return (data ?? []).map((r: any) => ({ email: r.user_email, label: r.from_name || r.shared_sender_label || r.user_email }));
+}
+
+// Resolve which mailbox to act on: the requested `as` account if it is a real configured
+// mailbox (any signed-in team member may view any team inbox), otherwise the caller's own.
+export async function resolveInboxAccount(me: string, as?: string | null): Promise<string> {
+  if (!as || as.toLowerCase() === me.toLowerCase()) return me;
+  const accts = await getInboxAccounts();
+  return accts.some((a) => a.email.toLowerCase() === as.toLowerCase()) ? as : me;
+}
+
 export async function getSharedSenders(): Promise<SharedSenderRow[]> {
   const { data, error } = await supabaseAdmin
     .from("user_email_config")

@@ -68,6 +68,10 @@ export default function InboxPage() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadErr, setThreadErr] = useState<string | null>(null);
   const [account, setAccount] = useState<string>("");
+  const [accounts, setAccounts] = useState<{ email: string; label: string }[]>([]);
+  const [me, setMe] = useState<string>("");
+  const [viewAs, setViewAs] = useState<string>(""); // empty = own inbox
+  const asQ = viewAs ? `?as=${encodeURIComponent(viewAs)}` : "";
 
   const [replyText, setReplyText] = useState("");
   const [attachments, setAttachments] = useState<{ filename: string; content: string; contentType: string }[]>([]);
@@ -78,21 +82,25 @@ export default function InboxPage() {
 
   const loadList = useCallback(async () => {
     setLoading(true);
-    try { const d = await fetch("/api/inbox").then((r) => r.json()); setPeople(d.people ?? []); setCounts(d.counts ?? {}); } catch {}
+    try {
+      const d = await fetch(`/api/inbox${asQ}`).then((r) => r.json());
+      setPeople(d.people ?? []); setCounts(d.counts ?? {});
+      setAccounts(d.accounts ?? []); setMe(d.me ?? "");
+    } catch {}
     setLoading(false);
-  }, []);
-  useEffect(() => { loadList(); }, [loadList]);
+  }, [asQ]);
+  useEffect(() => { loadList(); setSelected(null); }, [loadList]);
 
   const loadThread = useCallback(async (p: Person) => {
     setThreadLoading(true); setThreadErr(null); setMessages([]);
     try {
-      const d = await fetch(`/api/inbox/${p.author_id}`).then((r) => r.json());
+      const d = await fetch(`/api/inbox/${p.author_id}${asQ}`).then((r) => r.json());
       setMessages(d.messages ?? []); setAccount(d.target?.account ?? "");
       if (d.error) setThreadErr(d.error);
     } catch (e: any) { setThreadErr(e?.message ?? "Failed to load conversation"); }
     setThreadLoading(false);
     setTimeout(() => threadEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-  }, []);
+  }, [asQ]);
 
   function selectPerson(p: Person) {
     setSelected(p); setReplyText(""); setAttachments([]); loadThread(p);
@@ -103,7 +111,7 @@ export default function InboxPage() {
     e?.stopPropagation();
     setPeople((ps) => ps.map((x) => x.author_id === p.author_id ? { ...x, dismissed } : x));
     setCounts((c) => ({ ...c, dismissed: (c.dismissed ?? 0) + (dismissed ? 1 : -1) }));
-    await fetch(`/api/inbox/${p.author_id}/dismiss`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dismissed }) }).catch(() => {});
+    await fetch(`/api/inbox/${p.author_id}/dismiss${asQ}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dismissed }) }).catch(() => {});
     toast.info(dismissed ? `${p.name} moved to Dismissed.` : `${p.name} restored.`);
   }
 
@@ -123,7 +131,7 @@ export default function InboxPage() {
     if (!selected || !replyText.trim()) return;
     setSending(true);
     const lastMsgId = [...messages].reverse().find((m) => m.messageId)?.messageId ?? null;
-    const res = await fetch(`/api/inbox/${selected.author_id}/reply`, {
+    const res = await fetch(`/api/inbox/${selected.author_id}/reply${asQ}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ body: replyText, inReplyTo: lastMsgId, attachments }),
     }).then((r) => r.json()).catch(() => ({ error: "network error" }));
@@ -154,6 +162,21 @@ export default function InboxPage() {
           <p className="text-sm font-semibold flex-1">Inbox</p>
           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={loadList} title="Refresh"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /></Button>
         </div>
+        {accounts.length > 1 && (
+          <div className="px-3 py-2 border-b border-border shrink-0">
+            <select
+              value={viewAs || me}
+              onChange={(e) => setViewAs(e.target.value === me ? "" : e.target.value)}
+              className="w-full h-8 text-xs rounded-md border border-border bg-background px-2 outline-none focus:ring-1 focus:ring-violet-500"
+              title="View another team member's inbox"
+            >
+              {accounts.map((a) => (
+                <option key={a.email} value={a.email}>{a.email === me ? `${a.label} (you)` : `${a.label} — ${a.email}`}</option>
+              ))}
+            </select>
+            {viewAs && viewAs !== me && <p className="text-[10px] text-amber-500 mt-1">Viewing {viewAs} as admin</p>}
+          </div>
+        )}
         <div className="px-3 py-2 border-b border-border relative shrink-0">
           <Search className="absolute left-5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} className="h-8 pl-8 text-sm" />

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getInboxTarget, getUserEmailConfig, getUserAppPasswordEnc } from "@/lib/db/queries";
+import { getInboxTarget, getUserEmailConfig, getUserAppPasswordEnc, resolveInboxAccount } from "@/lib/db/queries";
 import { decryptSecret } from "@/lib/crypto";
 import { sendEmailAs, type MailAttachment } from "@/lib/email/smtp";
 import { auth } from "@auth";
@@ -21,9 +21,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const session = await auth().catch(() => null);
   const me = session?.user?.email;
   if (!me) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+  const account = await resolveInboxAccount(me, req.nextUrl.searchParams.get("as"));
 
-  const target = await getInboxTarget(id, me);
-  if (!target) return NextResponse.json({ error: "No conversation with this person in your mailbox." }, { status: 404 });
+  const target = await getInboxTarget(id, account);
+  if (!target) return NextResponse.json({ error: "No conversation with this person in this mailbox." }, { status: 404 });
   const recipient = to || target.recipient;
   if (!subject) subject = /^re:/i.test(target.lastSubject) ? target.lastSubject : `Re: ${target.lastSubject || "our conversation"}`;
 
@@ -36,17 +37,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       }).filter((a: MailAttachment) => a.content)
     : [];
 
-  // Always send from the logged-in user's OWN mailbox.
-  const isEnvOwner = !!process.env.SMTP_USER && me.toLowerCase() === process.env.SMTP_USER.toLowerCase();
+  // Send from the mailbox being viewed (own by default, or the ?as= account for admins).
+  const isEnvOwner = !!process.env.SMTP_USER && account.toLowerCase() === process.env.SMTP_USER.toLowerCase();
   const inReplyToFmt = inReplyTo ? (inReplyTo.startsWith("<") ? inReplyTo : `<${inReplyTo}>`) : undefined;
 
   try {
-    const pass = decryptSecret(await getUserAppPasswordEnc(me)) ?? (isEnvOwner ? (process.env.SMTP_PASS ?? null) : null);
-    if (!pass) return NextResponse.json({ error: `No Gmail app password on file for ${me}. Add it in Settings to reply from your mailbox.` }, { status: 400 });
-    const cfg = await getUserEmailConfig(me);
-    const res = await sendEmailAs({ user: me, pass, fromName: cfg.from_name, to: recipient, subject, body: text, inReplyTo: inReplyToFmt, references: inReplyToFmt, attachments });
+    const pass = decryptSecret(await getUserAppPasswordEnc(account)) ?? (isEnvOwner ? (process.env.SMTP_PASS ?? null) : null);
+    if (!pass) return NextResponse.json({ error: `No Gmail app password on file for ${account}. Add it in Settings to reply from this mailbox.` }, { status: 400 });
+    const cfg = await getUserEmailConfig(account);
+    const res = await sendEmailAs({ user: account, pass, fromName: cfg.from_name, to: recipient, subject, body: text, inReplyTo: inReplyToFmt, references: inReplyToFmt, attachments });
     if (!res.ok) return NextResponse.json({ error: res.error ?? "Send failed" }, { status: 500 });
-    return NextResponse.json({ ok: true, messageId: res.messageId, from: me, to: recipient, subject });
+    return NextResponse.json({ ok: true, messageId: res.messageId, from: account, to: recipient, subject });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Send failed" }, { status: 500 });
   }
