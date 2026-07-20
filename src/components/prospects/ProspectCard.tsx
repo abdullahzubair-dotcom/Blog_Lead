@@ -22,8 +22,14 @@ interface ProspectCardProps {
   onClick: () => void;
 }
 
+const CHECK_TONE: Record<string, string> = {
+  pass: "bg-green-500",
+  fail: "bg-red-500",
+  unverified: "bg-muted-foreground/30",
+};
+
 export function ProspectCard({ prospect, onClick }: ProspectCardProps) {
-  const { author, articles, contacts, mentions, score, domain } = prospect;
+  const { author, articles, contacts, mentions, score, domain, qualification } = prospect;
   const [imgError, setImgError] = useState(false);
 
   const topArticles = articles.slice(0, 2);
@@ -56,6 +62,29 @@ export function ProspectCard({ prospect, onClick }: ProspectCardProps) {
             </div>
           </div>
         </div>
+
+        {/* Qualification (from the Outreach Requirement filters: DR / traffic / US / relevancy) */}
+        {qualification && (
+          <div className="flex items-center flex-wrap gap-1.5">
+            <Badge
+              variant="outline"
+              className={qualification.qualified
+                ? "text-[10px] px-1.5 py-0 h-4 text-green-500 border-green-500/40 bg-green-500/10"
+                : "text-[10px] px-1.5 py-0 h-4 text-amber-500 border-amber-500/40 bg-amber-500/10"}
+            >
+              {qualification.qualified ? "Qualified" : "Review"}
+            </Badge>
+            {qualification.dr != null && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-normal tabular-nums">DR {Math.round(qualification.dr)}</Badge>
+            )}
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 font-normal tabular-nums">Fit {qualification.fit}</Badge>
+            <div className="flex items-center gap-1 ml-auto">
+              {qualification.checks.map((c) => (
+                <span key={c.label} title={`${c.label}: ${c.state}`} className={`h-1.5 w-1.5 rounded-full ${CHECK_TONE[c.state]}`} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Description */}
         {author.description && (

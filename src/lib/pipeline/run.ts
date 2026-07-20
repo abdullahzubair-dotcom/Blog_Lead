@@ -694,6 +694,16 @@ export async function processHit(hitId: string, url: string, source: string, see
     last_seen: new Date().toISOString(),
   });
 
+  // Real Domain Rating (free Ahrefs endpoint, 0 units) — fetch once per domain so the
+  // qualification filter (DR>=50) has real data. Best-effort: never blocks/fails discovery.
+  if (domainRow && (domainRow as any).dr == null) {
+    try {
+      const { fetchDomainRating } = await import("@/lib/enrich/domainRating");
+      const dr = await fetchDomainRating(host, abortSignal);
+      if (dr) await upsertDomain(host, { dr: dr.dr, dr_checked_at: new Date().toISOString(), metrics_source: dr.source } as any);
+    } catch { /* best-effort */ }
+  }
+
   const { relevant, score: llmRelevanceScore } = await scoreArticleRelevance(meta.title ?? "", text.slice(0, 600), abortSignal);
   if (!relevant || abortSignal?.aborted) return;
 

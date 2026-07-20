@@ -4,11 +4,32 @@ export interface Domain {
   name?: string;
   cms_guess?: string;
   dr_proxy_score: number;
+  dr?: number | null;                 // real Ahrefs Domain Rating (free endpoint)
+  dr_checked_at?: string | null;
+  organic_traffic?: number | null;    // monthly organic visits; null = unverified (needs paid plan)
+  us_traffic_share?: number | null;   // 0-100 %; null = unverified
+  traffic_checked_at?: string | null;
+  metrics_source?: string | null;
   country?: string;
   language?: string;
   first_seen: string;
   last_seen: string;
   created_at: string;
+}
+
+// Per-prospect qualification (from src/lib/score/qualify.ts), attached to ProspectCard.
+export interface ProspectQualification {
+  dr: number | null;
+  drPass: boolean;
+  traffic: number | null;
+  trafficPass: boolean | null;
+  usShare: number | null;
+  usPass: boolean | null;
+  relevance: number;
+  relevancePass: boolean;
+  qualified: boolean;
+  fit: number;
+  checks: { label: string; state: "pass" | "fail" | "unverified" }[];
 }
 
 export interface Author {
@@ -161,6 +182,7 @@ export interface ProspectCard {
   score: Score | null;
   domain: Domain | null;
   flaggedContent?: FlaggedContent[];
+  qualification?: ProspectQualification;
 }
 
 export interface DashboardStats {

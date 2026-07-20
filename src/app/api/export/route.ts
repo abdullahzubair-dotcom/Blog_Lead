@@ -7,14 +7,26 @@ export async function GET(req: NextRequest) {
   const minScore = searchParams.get("minScore") ? parseFloat(searchParams.get("minScore")!) : undefined;
   const tool = searchParams.get("tool") ?? undefined;
   const archetype = searchParams.get("archetype") ?? undefined;
+  const qualifiedOnly = searchParams.get("qualified_only") === "true";
+  const minDr = searchParams.get("min_dr") ? parseFloat(searchParams.get("min_dr")!) : undefined;
 
-  const { prospects } = await getProspects({ limit: 2000, offset: 0, minScore, tool, archetype });
+  const { prospects } = await getProspects({ limit: 2000, offset: 0, minScore, tool, archetype, qualifiedOnly, minDr });
 
+  const yn = (v: boolean | null) => (v == null ? "unverified" : v ? "yes" : "no");
   const rows = prospects.map((p) => ({
     name: p.author.full_name,
     role: p.author.role ?? "",
     publication: p.domain?.name ?? p.domain?.host ?? "",
     domain: p.domain?.host ?? "",
+    // ── Qualification (mirrors the Prospect Tracker sheet's filter columns) ──
+    qualified: p.qualification?.qualified ? "yes" : "no",
+    fit_rating: p.qualification?.fit ?? "",
+    dr: p.qualification?.dr ?? "",
+    dr_ge_50: yn(p.qualification?.drPass ?? null),
+    organic_traffic: p.domain?.organic_traffic ?? "unverified",
+    traffic_ge_10k: yn(p.qualification?.trafficPass ?? null),
+    us_majority: yn(p.qualification?.usPass ?? null),
+    relevant: yn(p.qualification?.relevancePass ?? null),
     bio: p.author.description ?? p.author.bio ?? "",
     avatar_url: p.author.avatar_url ?? "",
     composite_score: p.score?.composite ?? 0,

@@ -16,10 +16,12 @@ export async function GET(req: NextRequest) {
   const include = searchParams.get("include") ?? "";
   const campaignId = searchParams.get("campaign_id") ?? undefined;
   const excludeDiscarded = searchParams.get("exclude_discarded") === "true";
+  const qualifiedOnly = searchParams.get("qualified_only") === "true";
+  const minDr = searchParams.get("min_dr") ? parseFloat(searchParams.get("min_dr")!) : undefined;
 
   try {
     const [result, stats, toolCounts, timeline, provenance, publications] = await Promise.all([
-      getProspects({ limit, offset, minScore, archetype, tool, hasContact, emailStatus, search, sortBy, campaignId, excludeDiscarded }),
+      getProspects({ limit, offset, minScore, archetype, tool, hasContact, emailStatus, search, sortBy, campaignId, excludeDiscarded, qualifiedOnly, minDr }),
       include.includes("stats") ? getDashboardStats() : null,
       include.includes("charts") ? getToolMentionCounts() : null,
       include.includes("charts") ? getFreshnessTimeline() : null,

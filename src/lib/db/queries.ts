@@ -46,6 +46,7 @@ import type {
   EmailSendConfig,
 } from "@/lib/types";
 import { isLikelyPersonName, isGuessSource } from "@/lib/enrich/personFilter";
+import { qualifyProspect, DR_MIN, RELEVANCE_MIN } from "@/lib/score/qualify";
 import { registrableDomain } from "@/lib/util/domain";
 import { isBlockedUrl } from "@/lib/util/url";
 import { isRoleEmail } from "@/lib/email/roleEmail";
@@ -439,6 +440,8 @@ export async function getProspects(opts: {
   restrictIds?: string[];   // limit results to this author-id set (AND) — used by AI search
   excludeIds?: string[];    // drop these author ids from results (e.g. already-contacted)
   priorityIds?: string[];   // float these to the top (composite order preserved within) — strong AI-search matches
+  minDr?: number;           // only authors whose primary domain has real DR >= this
+  qualifiedOnly?: boolean;  // only authors that pass the free qualification filters (DR>=50 + relevant)
 }): Promise<{ prospects: ProspectCard[]; total: number }> {
   const limit = opts.limit ?? 24;
   const offset = opts.offset ?? 0;
@@ -550,6 +553,21 @@ export async function getProspects(opts: {
     }
   }
 
+  // Qualification filter: DR gate (real Ahrefs DR on the author's primary domain) and, for
+  // qualifiedOnly, the relevancy gate too. Traffic/US are unverified for now so they never
+  // block here (matches qualifyProspect: unverified paid filters don't disqualify).
+  if (opts.qualifiedOnly || opts.minDr != null) {
+    const drMin = opts.minDr ?? DR_MIN;
+    const doms = await fetchAllRows<{ id: string }>("domains", "id", (q) => q.gte("dr", drMin));
+    const domIds = new Set(doms.map((d) => d.id));
+    const authors = await fetchAllRows<{ id: string; primary_domain_id: string | null }>("authors", "id, primary_domain_id");
+    filterSets.push(new Set(authors.filter((a) => a.primary_domain_id && domIds.has(a.primary_domain_id)).map((a) => a.id)));
+    if (opts.qualifiedOnly) {
+      const rel = await fetchAllRows<{ author_id: string }>("scores", "author_id", (q) => q.gte("relevance", RELEVANCE_MIN));
+      filterSets.push(new Set(rel.map((r) => r.author_id)));
+    }
+  }
+
   // ─── Get score-sorted author order ────────────────────────────────────────
   const sortCol =
     opts.sortBy === "freshness" ? "freshness"
@@ -650,13 +668,27 @@ export async function getProspects(opts: {
     // Pick the score row with the highest composite so the badge always shows the author's best
     const score = (author.scores ?? []).sort((a: any, b: any) => (b.composite ?? 0) - (a.composite ?? 0))[0] ?? null;
 
+    const dom = author.domain ?? null;
+    const mailtos = (author.contacts ?? []).filter((c: any) => c.type === "mailto");
+    const qualification = qualifyProspect({
+      dr: dom?.dr ?? null,
+      organicTraffic: dom?.organic_traffic ?? null,
+      usTrafficShare: dom?.us_traffic_share ?? null,
+      relevance: score?.relevance ?? 0,
+      mentionCount: allMentions.length,
+      articleCount: articles.length,
+      hasEmail: mailtos.length > 0,
+      contactConfidence: Math.max(0, ...(author.contacts ?? []).map((c: any) => c.confidence ?? 0), 0),
+    });
+
     return {
       author: { ...author, contacts: undefined, scores: undefined, article_authors: undefined },
       articles,
       contacts: author.contacts ?? [],
       mentions: uniqueTools,
       score,
-      domain: author.domain ?? null,
+      domain: dom,
+      qualification,
     };
   });
 

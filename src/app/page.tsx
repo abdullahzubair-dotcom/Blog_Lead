@@ -40,6 +40,7 @@ export default function HomePage() {
   const [archetype, setArchetype] = useState("all");
   const [minScore, setMinScore] = useState("0");
   const [hasContact, setHasContact] = useState(false);
+  const [qualifiedOnly, setQualifiedOnly] = useState(false);
   const [emailStatus, setEmailStatus] = useState("any");
   const [sortBy, setSortBy] = useState("composite");
   const [selectedTool, setSelectedTool] = useState("all");
@@ -100,6 +101,7 @@ export default function HomePage() {
     if (archetype && archetype !== "all") params.set("archetype", archetype);
     if (minScore && minScore !== "0") params.set("minScore", minScore);
     if (hasContact) params.set("hasContact", "true");
+    if (qualifiedOnly) params.set("qualified_only", "true");
     if (emailStatus && emailStatus !== "any") params.set("email_status", emailStatus);
     if (selectedTool && selectedTool !== "all") params.set("tool", selectedTool);
     if (filterCampaignId) params.set("campaign_id", filterCampaignId);
@@ -120,7 +122,7 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, [offset, search, archetype, minScore, hasContact, emailStatus, sortBy, selectedTool, filterCampaignId]);
+  }, [offset, search, archetype, minScore, hasContact, qualifiedOnly, emailStatus, sortBy, selectedTool, filterCampaignId]);
 
   const loadRunHistory = useCallback(async () => {
     try {
@@ -209,7 +211,7 @@ export default function HomePage() {
     fetchProspects(true);
     loadRunHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, archetype, minScore, hasContact, emailStatus, sortBy, selectedTool, filterCampaignId]);
+  }, [search, archetype, minScore, hasContact, qualifiedOnly, emailStatus, sortBy, selectedTool, filterCampaignId]);
 
   useEffect(() => {
     if (offset > 0) fetchProspects();
@@ -638,6 +640,12 @@ export default function HomePage() {
                 <div className="flex items-center gap-2 pb-0.5">
                   <Switch id="hasContact" checked={hasContact} onCheckedChange={setHasContact} disabled={loading} />
                   <Label htmlFor="hasContact" className={`text-sm whitespace-nowrap ${loading ? "opacity-50" : "cursor-pointer"}`}>Has contact</Label>
+                </div>
+
+                {/* Qualified only — DR>=50 + relevant (from the Outreach Requirement filters) */}
+                <div className="flex items-center gap-2 pb-0.5">
+                  <Switch id="qualifiedOnly" checked={qualifiedOnly} onCheckedChange={setQualifiedOnly} disabled={loading} />
+                  <Label htmlFor="qualifiedOnly" className={`text-sm whitespace-nowrap ${loading ? "opacity-50" : "cursor-pointer"}`}>Qualified only</Label>
                 </div>
 
                 {/* Campaign filter */}
