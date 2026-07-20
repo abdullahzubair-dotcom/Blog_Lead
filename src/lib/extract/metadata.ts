@@ -25,8 +25,11 @@ export function extractMetadata(html: string, url: string): ExtractedMeta {
   for (const block of jsonldBlocks) {
     try {
       const obj = JSON.parse(block[1]);
-      const items = Array.isArray(obj) ? obj : [obj];
+      // Flatten @graph (Yoast and most modern CMSs nest the Article/Person nodes in @graph).
+      const raw = Array.isArray(obj) ? obj : [obj];
+      const items = raw.flatMap((o: any) => (o && Array.isArray(o["@graph"]) ? [o, ...o["@graph"]] : [o]));
       for (const item of items) {
+        if (!item || typeof item !== "object") continue;
         if (!meta.title && item.headline) meta.title = item.headline;
         if (!meta.publishedAt && (item.datePublished || item.dateModified)) {
           meta.publishedAt = item.datePublished ?? item.dateModified;
@@ -37,11 +40,20 @@ export function extractMetadata(html: string, url: string): ExtractedMeta {
         if (!meta.description && item.description) meta.description = item.description;
         if (!meta.publisher && item.publisher?.name) meta.publisher = item.publisher.name;
         if (!meta.author && item.author) {
-          const a = Array.isArray(item.author) ? item.author[0] : item.author;
-          meta.author = a?.name ?? a;
-          meta.authorUrl = a?.url ?? a?.sameAs;
+          let a: any = Array.isArray(item.author) ? item.author[0] : item.author;
+          // author is often just an @id reference to a Person node elsewhere in @graph.
+          if (a && typeof a === "object" && !a.name && a["@id"]) {
+            const person = items.find((it: any) => it && it["@id"] === a["@id"] && (it.name || it["@type"] === "Person"));
+            if (person) a = person;
+          }
+          const name = typeof a === "string" ? a : a?.name;
+          if (name && typeof name === "string") {
+            meta.author = name;
+            const same = typeof a === "object" ? (a?.url ?? (Array.isArray(a?.sameAs) ? a.sameAs[0] : a?.sameAs)) : undefined;
+            if (same) meta.authorUrl = same;
+          }
         }
-        if (!meta.canonicalUrl && item.url) meta.canonicalUrl = item.url;
+        if (!meta.canonicalUrl && item.url && typeof item.url === "string") meta.canonicalUrl = item.url;
       }
     } catch {}
   }
@@ -66,6 +78,24 @@ export function extractMetadata(html: string, url: string): ExtractedMeta {
   }
   if (!meta.author) {
     meta.author = decode(attr(html, /<meta[^>]+name=["']author["'][^>]+content=["']([^"']+)/i));
+  }
+  // Author fallbacks for sites that don't put it in JSON-LD or <meta name=author> (e.g. 9to5mac,
+  // Analytics India Mag, Analytics Vidhya). Downstream isLikelyPersonName filters out non-names.
+  if (!meta.author) {
+    const aa = attr(html, /<meta[^>]+property=["']article:author["'][^>]+content=["']([^"']+)/i);
+    if (aa && !/^https?:\/\//i.test(aa)) meta.author = decode(aa);
+  }
+  if (!meta.author) {
+    const rel = html.match(/<a[^>]+rel=["'][^"']*\bauthor\b[^"']*["'][^>]*>([^<]{2,60})<\/a>/i);
+    if (rel) meta.author = decode(rel[1].replace(/^by\s+/i, "").trim());
+  }
+  if (!meta.author) {
+    const ip = html.match(/itemprop=["']author["'][^>]*>\s*(?:<[^>]+itemprop=["']name["'][^>]*>)?\s*([^<]{2,60})</i);
+    if (ip) meta.author = decode(ip[1].replace(/^by\s+/i, "").trim());
+  }
+  if (!meta.author) {
+    const by = html.match(/<(?:a|span|div|p)[^>]+class=["'][^"']*(?:\bauthor\b|byline|by-line|author-name)[^"']*["'][^>]*>\s*(?:<a[^>]*>)?\s*([^<]{2,60})</i);
+    if (by) { const t = decode(by[1].replace(/^by[:\s]+/i, "").trim()); if (t) meta.author = t; }
   }
   if (!meta.publishedAt) {
     meta.publishedAt =
