@@ -62,6 +62,9 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("unread");
   const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState<"recent" | "oldest" | "unread" | "name" | "sentiment">("recent");
+  const [sentFilter, setSentFilter] = useState<"all" | "positive" | "neutral" | "negative">("all");
+  const [wonOnly, setWonOnly] = useState(false);
   const [selected, setSelected] = useState<Person | null>(null);
 
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -151,7 +154,20 @@ export default function InboxPage() {
   }
 
   const inTab = (p: Person) => tab === "dismissed" ? p.dismissed : !p.dismissed && (tab === "unread" ? p.unread : p.category === tab);
-  const filtered = people.filter((p) => inTab(p) && (!q || p.name.toLowerCase().includes(q.toLowerCase()) || p.publication.toLowerCase().includes(q.toLowerCase()) || p.recipient.toLowerCase().includes(q.toLowerCase())));
+  const dateOf = (p: Person) => new Date(p.last_at ?? p.replied_at ?? p.success_at ?? 0).getTime();
+  const sentRank = (s: string | null) => (s === "positive" ? 0 : s === "neutral" ? 1 : s === "negative" ? 2 : 3);
+  const filtered = people
+    .filter((p) => inTab(p)
+      && (!q || p.name.toLowerCase().includes(q.toLowerCase()) || p.publication.toLowerCase().includes(q.toLowerCase()) || p.recipient.toLowerCase().includes(q.toLowerCase()))
+      && (sentFilter === "all" || p.reply_sentiment === sentFilter)
+      && (!wonOnly || !!p.success_at))
+    .sort((a, b) => {
+      if (sortBy === "name") return a.name.localeCompare(b.name);
+      if (sortBy === "oldest") return dateOf(a) - dateOf(b);
+      if (sortBy === "unread") return a.unread === b.unread ? dateOf(b) - dateOf(a) : (a.unread ? -1 : 1);
+      if (sortBy === "sentiment") { const r = sentRank(a.reply_sentiment) - sentRank(b.reply_sentiment); return r !== 0 ? r : dateOf(b) - dateOf(a); }
+      return dateOf(b) - dateOf(a); // recent
+    });
 
   return (
     <div className="-m-6 flex h-[calc(100vh-64px)] overflow-hidden">
@@ -187,6 +203,23 @@ export default function InboxPage() {
               {t.label} <span className="opacity-70 tabular-nums">{counts[t.key] ?? 0}</span>
             </button>
           ))}
+        </div>
+        {/* Sort + filter toolbar */}
+        <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0">
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} title="Sort" className="h-7 rounded-md border border-border bg-background px-1.5 text-xs outline-none focus:ring-1 focus:ring-violet-500">
+            <option value="recent">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="unread">Unread first</option>
+            <option value="name">Name A–Z</option>
+            <option value="sentiment">Sentiment</option>
+          </select>
+          <div className="flex items-center gap-0.5 ml-auto">
+            <button onClick={() => setSentFilter("all")} title="All sentiments" className={`px-1.5 h-7 rounded-md text-[11px] ${sentFilter === "all" ? "bg-violet-500/15 text-violet-300" : "text-muted-foreground hover:bg-muted/40"}`}>All</button>
+            <button onClick={() => setSentFilter("positive")} title="Positive only" className={`p-1 h-7 rounded-md ${sentFilter === "positive" ? "bg-emerald-500/15 text-emerald-400" : "text-muted-foreground hover:bg-muted/40"}`}><Smile className="h-3.5 w-3.5" /></button>
+            <button onClick={() => setSentFilter("neutral")} title="Neutral only" className={`p-1 h-7 rounded-md ${sentFilter === "neutral" ? "bg-amber-500/15 text-amber-400" : "text-muted-foreground hover:bg-muted/40"}`}><Meh className="h-3.5 w-3.5" /></button>
+            <button onClick={() => setSentFilter("negative")} title="Negative only" className={`p-1 h-7 rounded-md ${sentFilter === "negative" ? "bg-red-500/15 text-red-400" : "text-muted-foreground hover:bg-muted/40"}`}><Frown className="h-3.5 w-3.5" /></button>
+            <button onClick={() => setWonOnly((w) => !w)} title="Wins only" className={`p-1 h-7 rounded-md ${wonOnly ? "bg-amber-500/15 text-amber-400" : "text-muted-foreground hover:bg-muted/40"}`}><Trophy className="h-3.5 w-3.5" /></button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
           {loading ? <ListSkeleton /> : filtered.length === 0 ? (
