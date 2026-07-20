@@ -1945,6 +1945,69 @@ export async function isAuthorContacted(authorId: string): Promise<{ contacted: 
   return { contacted, override, hasHistory };
 }
 
+// ─── Negotiation conversation + payments ───────────────────────────────────────
+
+export interface ConvoMessage { from: "us" | "them"; body: string; at: string | null; kind?: string }
+
+// Reconstruct the full conversation for a thread anchor (the initial outreach): our sent
+// messages (initial + follow-ups + negotiation replies) interleaved with their reply excerpts,
+// oldest first. Used by the Negotiation and Payments pages.
+export async function getConversation(anchorId: string): Promise<ConvoMessage[]> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .select("id, kind, body, status, created_at, sent_at, reply_excerpt, replied_at")
+    .or(`id.eq.${anchorId},parent_id.eq.${anchorId}`)
+    .order("created_at", { ascending: true });
+  const msgs: ConvoMessage[] = [];
+  for (const r of (data ?? []) as any[]) {
+    if (r.body && r.status !== "failed") msgs.push({ from: "us", body: r.body, at: r.sent_at ?? r.created_at, kind: r.kind });
+    if (r.reply_excerpt) msgs.push({ from: "them", body: r.reply_excerpt, at: r.replied_at });
+  }
+  return msgs;
+}
+
+export interface PaymentThread {
+  id: string; name: string; publication: string; host: string; dr: number | null;
+  sender: string | null; sentBy: string | null; agreedPrice: number | null; paidAmount: number | null;
+  status: string | null; paidAt: string | null; requestedAt: string | null; subject: string;
+}
+
+// Threads that resulted in a deal: negotiation agreed (owed) or any explicit payment_status.
+export async function getPaymentThreads(): Promise<PaymentThread[]> {
+  const sel = "id, subject, sender_email, sent_by_email, agreed_price, paid_amount, payment_status, paid_at, payment_requested_at, negotiation_status, sent_at, created_at, author:authors(full_name, domain:domains(host, name, dr))";
+  const [agreed, withPay] = await Promise.all([
+    supabaseAdmin.from("outreach_emails").select(sel).eq("kind", "initial").eq("negotiation_status", "agreed"),
+    supabaseAdmin.from("outreach_emails").select(sel).eq("kind", "initial").not("payment_status", "is", null),
+  ]);
+  if (agreed.error) throw agreed.error;
+  if (withPay.error) throw withPay.error;
+  const byId = new Map<string, any>();
+  for (const r of [...(agreed.data ?? []), ...(withPay.data ?? [])]) byId.set((r as any).id, r);
+  return [...byId.values()]
+    .sort((a, b) => String(b.paid_at ?? b.sent_at ?? b.created_at ?? "").localeCompare(String(a.paid_at ?? a.sent_at ?? a.created_at ?? "")))
+    .map((r: any) => ({
+      id: r.id, name: r.author?.full_name ?? "Unknown",
+      publication: r.author?.domain?.name ?? r.author?.domain?.host ?? "", host: r.author?.domain?.host ?? "",
+      dr: r.author?.domain?.dr ?? null, sender: r.sender_email, sentBy: r.sent_by_email,
+      agreedPrice: r.agreed_price != null ? Number(r.agreed_price) : null,
+      paidAmount: r.paid_amount != null ? Number(r.paid_amount) : null,
+      status: r.payment_status ?? (r.negotiation_status === "agreed" ? "owed" : null),
+      paidAt: r.paid_at, requestedAt: r.payment_requested_at, subject: r.subject ?? "",
+    }));
+}
+
+export async function markPayment(id: string, action: "paid" | "request" | "reset"): Promise<void> {
+  const now = new Date().toISOString();
+  if (action === "paid") {
+    const { data } = await supabaseAdmin.from("outreach_emails").select("agreed_price").eq("id", id).maybeSingle();
+    await supabaseAdmin.from("outreach_emails").update({ payment_status: "paid", paid_at: now, paid_amount: (data as any)?.agreed_price ?? null }).eq("id", id);
+  } else if (action === "request") {
+    await supabaseAdmin.from("outreach_emails").update({ payment_status: "requested", payment_requested_at: now }).eq("id", id);
+  } else {
+    await supabaseAdmin.from("outreach_emails").update({ payment_status: "owed", paid_at: null }).eq("id", id);
+  }
+}
+
 // ─── Per-user email config (own Gmail + own schedule) ──────────────────────────
 
 const DEFAULT_USER_CONFIG = { timezone: "America/New_York", send_hour_start: 9, send_hour_end: 17, gap_minutes: 15, daily_cap: 50 };

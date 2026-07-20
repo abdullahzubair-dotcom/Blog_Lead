@@ -21,6 +21,7 @@ import {
   Unlink,
   BookOpen,
   Bot,
+  CreditCard,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,7 @@ const NAV = [
   { name: "Sending", href: "/sending", icon: Send },
   { name: "Inbox", href: "/inbox", icon: Inbox },
   { name: "Negotiation", href: "/negotiation", icon: Bot },
+  { name: "Payments", href: "/payments", icon: CreditCard },
   { name: "Handbook", href: "/handbook", icon: BookOpen },
   { name: "Notifications", href: "/notifications", icon: Bell },
   { name: "Link Audit", href: "/link-audit", icon: Unlink },

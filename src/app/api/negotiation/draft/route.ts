@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
       settings, thread,
       authorName: (email as any).author?.full_name ?? "there",
       publication: dom?.name ?? dom?.host ?? "",
-      ceiling, floor: settings.min_price, lastIntent: cls.intent,
+      ceiling, floor: settings.min_price, lastIntent: cls.intent, theirPrice: cls.priceMentioned,
     });
     if (!draft) return NextResponse.json({ error: "No OPENROUTER_API_KEY configured — cannot draft" }, { status: 400 });
 
@@ -68,9 +68,12 @@ export async function POST(req: NextRequest) {
     }).select("id").single();
     if (error) throw error;
 
+    // On agreement, record the agreed price and flag it as owed so it lands on the Payments page.
+    const agreedPrice = draft.statusHint === "agreed" ? (draft.suggestedOffer ?? cls.priceMentioned ?? null) : null;
     await updateOutreachEmail(initialId, {
       negotiation_status: draft.statusHint,
-      negotiation_notes: `their intent: ${cls.intent} (${cls.reason}); our offer: ${draft.suggestedOffer ?? "—"}; ceiling: ${ceiling ?? "placement-only"}`,
+      negotiation_notes: `their intent: ${cls.intent} (${cls.reason}); our offer: ${draft.suggestedOffer ?? "-"}; ceiling: ${ceiling ?? "placement-only"}`,
+      ...(draft.statusHint === "agreed" ? { agreed_price: agreedPrice, payment_status: agreedPrice ? "owed" : null } : {}),
     } as any);
 
     return NextResponse.json({

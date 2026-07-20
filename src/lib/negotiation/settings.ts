@@ -33,12 +33,12 @@ export const DEFAULT_NEGOTIATION_SETTINGS: NegotiationSettings = {
   ai_autonomy: false,
   handbook:
     "Goal: get ImagineArt (an AI image/video generation tool) featured or included in the writer's article, roundup, or list. " +
-    "Be genuinely helpful and specific about why ImagineArt fits their coverage. Negotiate placement and, if they ask for payment, " +
-    "price using the pricing tiers (based on the site's Domain Rating + US traffic). Start at the low end and move up in small steps " +
-    "only if needed, never above the tier ceiling or below the floor. Keep it human and short. If they clearly decline, thank them and stop.",
+    "ALWAYS aim to pay the LEAST possible. Prefer a free or editorial inclusion, and only offer money if they clearly require it. " +
+    "When you do offer, open LOW, concede slowly in small steps, and never jump to the tier ceiling (that is a hard cap, not a target). " +
+    "Be genuinely helpful and specific about why ImagineArt fits their coverage. Keep it human and short. If they clearly decline, thank them and stop.",
   tone: "Warm, concise, human, professional. Never pushy or robotic.",
-  aggressiveness: "balanced",
-  opening_percent: 40,
+  aggressiveness: "firm",
+  opening_percent: 20,
   style_rules: "Plain text only. Never use em dashes or en dashes; use commas or periods instead. No bracketed placeholders. Keep it short and human.",
   max_thread_length: 4,
   min_price: 0,

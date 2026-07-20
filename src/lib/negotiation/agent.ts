@@ -106,6 +106,7 @@ export interface DraftInput {
   ceiling: number | null;    // max we may offer this thread (from pricing tier / override); null = placement-only, no paid offer
   floor: number;             // never below this
   lastIntent: ReplyIntent;
+  theirPrice?: number | null; // a $ figure they just named (from classification), if any
   senderName?: string;       // who signs the email
 }
 
@@ -129,6 +130,27 @@ export async function draftNegotiationReply(input: DraftInput): Promise<DraftRes
     return {
       body: sanitizeBody(`Hi ${first},\n\nTotally understand, thanks for letting me know and no worries at all. If anything changes down the line, my door is open. Wishing you well.\n\nBest,\n${signer}`),
       suggestedOffer: null, shouldStop: true, statusHint: "declined",
+    };
+  }
+
+  // Close on acceptance: if they accepted a concrete price we can pay, take the deal at THAT
+  // number. Lowballing happens while negotiating (counter_offer), not after a yes, so we never
+  // talk ourselves out of a good deal. If their accepted price is above the ceiling, fall
+  // through and let the model counter down instead of agreeing.
+  const theirPrice = input.theirPrice ?? null;
+  if (lastIntent === "accept" && theirPrice != null && theirPrice >= floor && (ceiling == null || theirPrice <= ceiling)) {
+    return {
+      body: sanitizeBody(`Hi ${first},\n\nPerfect, ${settings.currency} ${theirPrice} works. I will get the assets and a short blurb over to you shortly. Thanks ${first}, glad to be included.\n\nBest,\n${signer}`),
+      suggestedOffer: theirPrice, shouldStop: true, statusHint: "agreed",
+    };
+  }
+  // Accepted our terms with no explicit number: close at our lowball opening (the least we would pay).
+  if (lastIntent === "accept" && theirPrice == null && ceiling != null) {
+    const openPctA = Math.min(100, Math.max(0, settings.opening_percent ?? 40));
+    const closeAt = Math.max(floor, Math.round(floor + (ceiling - floor) * (openPctA / 100)));
+    return {
+      body: sanitizeBody(`Hi ${first},\n\nGreat, glad it works. I will send the assets and a short blurb over shortly so you can add ImagineArt. Thanks ${first}.\n\nBest,\n${signer}`),
+      suggestedOffer: closeAt, shouldStop: true, statusHint: "agreed",
     };
   }
 
