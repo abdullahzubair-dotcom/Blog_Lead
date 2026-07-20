@@ -1790,6 +1790,19 @@ export async function getEnrichmentRun(id: string): Promise<any | null> {
   return data ?? null;
 }
 
+// A reply / bounce / win means: stop any not-yet-sent follow-up to this author, so a
+// previously-scheduled nudge never lands after they've already engaged. Parks them as drafts
+// (status/scheduled_at cleared — kept for the record, never auto-sent). Returns how many
+// were stopped. Mirrors the send-time guard in /api/emails/process.
+export async function stopPendingFollowupsForAuthor(authorId: string, reason: string): Promise<number> {
+  const { data } = await supabaseAdmin
+    .from("outreach_emails")
+    .update({ status: "draft", scheduled_at: null, followup_skipped: true, error: reason })
+    .eq("author_id", authorId).eq("kind", "followup").in("status", ["scheduled", "pending"])
+    .select("id");
+  return (data ?? []).length;
+}
+
 // Author IDs already contacted (or queued) in OTHER campaigns/workflows — so we never
 // email the same person twice across campaigns. "Contacted" = a sent or scheduled
 // outreach email in any workflow other than the one given.

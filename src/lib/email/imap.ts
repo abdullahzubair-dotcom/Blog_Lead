@@ -8,6 +8,7 @@ import { redis } from "@/lib/redis";
 import { decryptSecret } from "@/lib/crypto";
 import {
   getUserAppPasswordEnc, getOutstandingSentForReplyCheck, updateOutreachEmail, markRepliesChecked, setAuthorDiscarded,
+  stopPendingFollowupsForAuthor,
 } from "@/lib/db/queries";
 
 const normId = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
@@ -183,6 +184,10 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
           const sentiment = await analyzeSentiment(m.excerpt || m.subject).catch(() => null);
           await updateOutreachEmail(id, { ...meta, reply_sentiment: sentiment, replied_at: nowIso, bounced_at: null });
           result.repliesFound++;
+          // They replied — immediately stop any follow-up already scheduled to them, so a
+          // queued nudge can't land after they've engaged (closes the schedule→reply→send gap).
+          const authorId = authorById.get(id);
+          if (authorId) await stopPendingFollowupsForAuthor(authorId, "Canceled: recipient replied").catch(() => 0);
         } else if (m.kind === "bounce") {
           // Not a reply — the address bounced. Clear any bogus reply mark, record the bounce,
           // skip follow-ups to a dead address, and discard the author (bad/wrong email) so
@@ -190,7 +195,10 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
           await updateOutreachEmail(id, { ...meta, replied_at: null, bounced_at: nowIso, followup_skipped: true });
           result.bounces++;
           const authorId = authorById.get(id);
-          if (authorId) { try { await setAuthorDiscarded(authorId, true); result.discarded++; } catch { /* non-fatal */ } }
+          if (authorId) {
+            await stopPendingFollowupsForAuthor(authorId, "Canceled: address bounced").catch(() => 0);
+            try { await setAuthorDiscarded(authorId, true); result.discarded++; } catch { /* non-fatal */ }
+          }
         } else {
           await updateOutreachEmail(id, { ...meta, replied_at: null });
           result.autoReplies++;

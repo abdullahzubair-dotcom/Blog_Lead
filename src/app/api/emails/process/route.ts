@@ -53,6 +53,15 @@ export async function POST(req: NextRequest) {
   const results: Array<{ id: string; ok: boolean; error?: string }> = [];
 
   try {
+    // Reply detection runs BEFORE the send loop — so a follow-up that's due right now sees the
+    // freshest reply status and the send-time guard below can park it if the recipient replied
+    // since it was scheduled. (Read-only; failures never block sending.)
+    let replies = { accountsChecked: 0, repliesFound: 0, errors: [] as string[] };
+    try {
+      const { runReplyDetection } = await import("@/lib/email/imap");
+      replies = await runReplyDetection();
+    } catch (e: any) { replies.errors.push(e?.message ?? "reply detection error"); }
+
     const due = await getDueEmails(50);
 
     for (const email of due) {
@@ -123,15 +132,6 @@ export async function POST(req: NextRequest) {
         failed++; results.push({ id: email.id, ok: false, error: res.error });
       }
     }
-
-    // Auto reply detection FIRST — read each sender's mailbox (rate-limited per account)
-    // and mark replies, so we never follow up with someone who just replied. Read-only;
-    // failures never block sending.
-    let replies = { accountsChecked: 0, repliesFound: 0, errors: [] as string[] };
-    try {
-      const { runReplyDetection } = await import("@/lib/email/imap");
-      replies = await runReplyDetection();
-    } catch (e: any) { replies.errors.push(e?.message ?? "reply detection error"); }
 
     // Auto follow-ups — day-2, no-reply initials get a threaded nudge SCHEDULED (kill-switch
     // respected). They send on a later run when due, threaded into the original.
