@@ -35,7 +35,7 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
       for (let attempt = 0; attempt < 8; attempt++) {
         const active = await getActiveTavilyKey();
         if (!active) { onError?.("no Tavily key available (pool empty / all exhausted)"); return []; }
-        void trackTavilyCall(); // count toward the monthly-usage banner
+        void trackTavilyCall(active.id); // count toward this key's + the global monthly-usage tally
         const res = await fetch("https://api.tavily.com/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -46,7 +46,7 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
           const d = await res.json();
           return (d.results ?? []).map((r: any) => ({ url: r.url, title: r.title ?? "", snippet: (r.content ?? "").slice(0, 300) })).filter((h: SearchHit) => h.url?.startsWith("http"));
         }
-        if (QUOTA.has(res.status) && active.id) {
+        if (QUOTA.has(res.status) && active.id && active.id !== "env") {
           // Pool key hit its quota — mark it exhausted for the month and try the next one.
           await markTavilyKeyExhausted(active.id);
           onError?.(`Tavily key ${active.id} exhausted (HTTP ${res.status}) — rotating to next`);

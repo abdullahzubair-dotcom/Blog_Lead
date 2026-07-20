@@ -4,20 +4,23 @@ import { encryptSecret, decryptSecret } from "@/lib/crypto";
 // Tavily has no usage API, so we count calls ourselves (per calendar month) in Redis and
 // flag the last hard error. Powers a site-wide banner that warns when you're near/over the
 // monthly quota — so you can swap the key before searches start failing.
-const LIMIT = Number(process.env.TAVILY_MONTHLY_LIMIT || 1000); // free tier = 1000/mo
+const PER_KEY_LIMIT = Number(process.env.TAVILY_MONTHLY_LIMIT || 1000); // free tier = 1000/mo PER KEY
 const monthTag = () => new Date().toISOString().slice(0, 7); // "2026-07"
-const monthKey = () => `tavily:count:${monthTag()}`;
+const monthKey = () => `tavily:count:${monthTag()}`;               // global tally (all keys)
+const keyCountKey = (id: string) => `tavily:count:${monthTag()}:${id}`; // per-key tally
 const ERR_KEY = "tavily:error";
 const KEY_OVERRIDE_KEY = "tavily:key_override"; // legacy single-key override (still honored)
 const POOL_KEY = "tavily:pool";                 // rotating pool of keys
+const ENV_ID = "env";                           // synthetic id for the env-var fallback key
 
 // ─── Rotating key pool ───────────────────────────────────────────────────────────
-// A list of Tavily keys you manage in Settings. Searches use the first non-exhausted key;
-// when one hits its monthly quota (429/402/432/403) it's flagged exhausted for the current
-// month and searches roll to the next. Exhaustion auto-clears when the month rolls over, so
-// keys become usable again on quota renewal. Add as many as you want — you never run out.
+// A list of Tavily keys you manage in Settings. Every search is sent to the LEAST-USED key
+// this month, so load spreads evenly across all keys instead of hammering one until it dies.
+// When a key hits its monthly quota (429/402/432/403) it's flagged exhausted for the current
+// month and dropped from rotation; exhaustion auto-clears when the month rolls over, so keys
+// become usable again on quota renewal. Add as many as you want — you never run out.
 export interface PoolEntry { id: string; enc: string; label?: string; exhaustedMonth?: string }
-export interface PoolKeyStatus { id: string; label: string; masked: string; active: boolean; exhaustedThisMonth: boolean }
+export interface PoolKeyStatus { id: string; label: string; masked: string; active: boolean; exhaustedThisMonth: boolean; used: number }
 
 async function readPool(): Promise<PoolEntry[]> {
   const r = redis();
@@ -33,6 +36,15 @@ async function writePool(pool: PoolEntry[]): Promise<void> {
 }
 function maskKey(k: string): string {
   return k.length <= 10 ? "••••" : `${k.slice(0, 6)}…${k.slice(-4)}`;
+}
+// Per-key monthly call counts (best-effort — a missing Redis just yields zeros).
+async function readCounts(ids: string[]): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  const r = redis();
+  if (!r || ids.length === 0) { ids.forEach((id) => (out[id] = 0)); return out; }
+  const vals = await r.mget<(number | string | null)[]>(...ids.map(keyCountKey)).catch(() => []);
+  ids.forEach((id, i) => (out[id] = Number(vals?.[i] ?? 0) || 0));
+  return out;
 }
 
 export async function addTavilyKey(key: string, label?: string): Promise<void> {
@@ -53,26 +65,35 @@ export async function markTavilyKeyExhausted(id: string): Promise<void> {
 }
 export async function listTavilyKeys(): Promise<PoolKeyStatus[]> {
   const month = monthTag();
-  return (await readPool()).map((e) => {
+  const pool = await readPool();
+  const counts = await readCounts(pool.map((e) => e.id));
+  return pool.map((e) => {
     const exhausted = e.exhaustedMonth === month;
-    return { id: e.id, label: e.label ?? "", masked: maskKey(decryptSecret(e.enc) ?? ""), active: !exhausted, exhaustedThisMonth: exhausted };
+    return { id: e.id, label: e.label ?? "", masked: maskKey(decryptSecret(e.enc) ?? ""), active: !exhausted, exhaustedThisMonth: exhausted, used: counts[e.id] ?? 0 };
   });
 }
-// The next usable key: first non-exhausted pool entry, else the legacy override, else env.
-export async function getActiveTavilyKey(): Promise<{ id: string | null; key: string } | null> {
+// The next key to use: the LEAST-USED non-exhausted pool entry (balances load across all keys
+// and naturally backs off a key that's taken more traffic). Falls back to the legacy override,
+// then the env key, when the pool is empty.
+export async function getActiveTavilyKey(): Promise<{ id: string; key: string } | null> {
   const month = monthTag();
-  for (const e of await readPool()) {
-    if (e.exhaustedMonth === month) continue;
-    const key = decryptSecret(e.enc);
-    if (key) return { id: e.id, key };
+  const active = (await readPool()).filter((e) => e.exhaustedMonth !== month);
+  if (active.length > 0) {
+    const counts = await readCounts(active.map((e) => e.id));
+    // Least-used first; stable tiebreak on pool order so behavior is deterministic.
+    active.sort((a, b) => (counts[a.id] ?? 0) - (counts[b.id] ?? 0));
+    for (const e of active) {
+      const key = decryptSecret(e.enc);
+      if (key) return { id: e.id, key };
+    }
   }
   const r = redis();
   if (r) {
     const legacy = decryptSecret(await r.get<string>(KEY_OVERRIDE_KEY).catch(() => null));
-    if (legacy) return { id: null, key: legacy };
+    if (legacy) return { id: ENV_ID, key: legacy };
   }
   const env = process.env.TAVILY_API_KEY;
-  return env ? { id: null, key: env } : null;
+  return env ? { id: ENV_ID, key: env } : null;
 }
 
 // Back-compat single-value accessor (used where rotation isn't needed).
@@ -105,14 +126,21 @@ export async function resetTavilyUsage(): Promise<void> {
   if (!r) return;
   await r.del(monthKey()).catch(() => {});
   await r.del(ERR_KEY).catch(() => {});
+  // Clear per-key tallies too, so a reset zeroes the whole picture.
+  const pool = await readPool().catch(() => [] as PoolEntry[]);
+  await Promise.all([...pool.map((e) => e.id), ENV_ID].map((id) => r.del(keyCountKey(id)).catch(() => {})));
 }
 
-export async function trackTavilyCall(): Promise<void> {
+// Count a call toward the monthly-usage banner: the global tally + the specific key's tally.
+export async function trackTavilyCall(keyId?: string): Promise<void> {
   const r = redis();
   if (!r) return;
   const k = monthKey();
   const n = await r.incr(k).catch(() => 0);
   if (n === 1) await r.expire(k, 60 * 60 * 24 * 40).catch(() => {}); // ~40d, spans the month
+  const pk = keyCountKey(keyId || ENV_ID);
+  const pn = await r.incr(pk).catch(() => 0);
+  if (pn === 1) await r.expire(pk, 60 * 60 * 24 * 40).catch(() => {});
 }
 
 // Flag a hard failure (bad key / quota exceeded / rate limited). Auto-expires in 24h.
@@ -124,27 +152,33 @@ export async function flagTavilyError(detail: string): Promise<void> {
 
 export interface TavilyUsage {
   enabled: boolean;
-  used: number;
-  limit: number;
-  near: boolean;   // >= 90%
-  over: boolean;   // >= 100%
+  used: number;        // total calls this month across all keys
+  limit: number;       // aggregate capacity = active keys × per-key limit
+  perKeyLimit: number; // per-key monthly limit (free tier = 1000)
+  near: boolean;       // >= 90% of aggregate capacity
+  over: boolean;       // no capacity left
   error: { detail: string; at: number } | null;
   poolTotal: number;   // keys in the rotating pool
   poolActive: number;  // pool keys not exhausted this month
+  perKey: { id: string; label: string; masked: string; used: number; limit: number; active: boolean }[];
 }
 
 export async function getTavilyUsage(): Promise<TavilyUsage> {
   const r = redis();
   const pool = await listTavilyKeys();
   const poolActive = pool.filter((k) => k.active).length;
-  // Enabled if the env key is wired OR we have any pool keys. With a pool, quota is spread
-  // across many keys, so the single-key "near/over" banner only fires when nothing's left.
+  // Enabled if the env key is wired OR we have any pool keys.
   const enabled = !!process.env.TAVILY_API_KEY || pool.length > 0;
-  if (!r) return { enabled, used: 0, limit: LIMIT, near: false, over: false, error: null, poolTotal: pool.length, poolActive };
+  const perKey = pool.map((k) => ({ id: k.id, label: k.label, masked: k.masked, used: k.used, limit: PER_KEY_LIMIT, active: k.active }));
+  // Aggregate capacity spreads across every active key (4 keys → 4,000/mo), so the banner
+  // reflects true remaining headroom, not a single key's 1,000.
+  const limit = (pool.length > 0 ? Math.max(poolActive, 0) : 1) * PER_KEY_LIMIT || PER_KEY_LIMIT;
+  if (!r) return { enabled, used: 0, limit, perKeyLimit: PER_KEY_LIMIT, near: false, over: false, error: null, poolTotal: pool.length, poolActive, perKey };
   const used = Number(await r.get(monthKey()).catch(() => 0)) || 0;
   const errRaw = await r.get<any>(ERR_KEY).catch(() => null);
   const error = errRaw ? (typeof errRaw === "string" ? JSON.parse(errRaw) : errRaw) : null;
-  // A pool with active keys left means we're NOT actually out, so suppress the scare banner.
-  const outOfKeys = pool.length > 0 ? poolActive === 0 : used >= LIMIT;
-  return { enabled, used, limit: LIMIT, near: used >= LIMIT * 0.9, over: outOfKeys, error, poolTotal: pool.length, poolActive };
+  // A pool with active keys left means we're NOT actually out, so judge "over" by remaining keys.
+  const over = pool.length > 0 ? poolActive === 0 : used >= limit;
+  const near = pool.length > 0 ? poolActive <= 1 && !over : used >= limit * 0.9;
+  return { enabled, used, limit, perKeyLimit: PER_KEY_LIMIT, near, over, error, poolTotal: pool.length, poolActive, perKey };
 }

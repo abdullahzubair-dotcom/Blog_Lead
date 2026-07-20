@@ -46,7 +46,7 @@ export default function AdminPage() {
 
   // Tavily API key override
   const [tavilyKeyInput, setTavilyKeyInput] = useState("");
-  const [tavilyStatus, setTavilyStatus] = useState<{ hasOverride: boolean; usage: { enabled: boolean; used: number; limit: number; near: boolean; over: boolean; error: { detail: string; at: number } | null } } | null>(null);
+  const [tavilyStatus, setTavilyStatus] = useState<{ hasOverride: boolean; keys?: { id: string; label: string; masked: string; active: boolean; exhaustedThisMonth: boolean; used: number }[]; usage: { enabled: boolean; used: number; limit: number; perKeyLimit?: number; near: boolean; over: boolean; poolTotal?: number; poolActive?: number; error: { detail: string; at: number } | null } } | null>(null);
   const [savingTavilyKey, setSavingTavilyKey] = useState(false);
   const [clearingTavilyKey, setClearingTavilyKey] = useState(false);
 
@@ -667,6 +667,29 @@ export default function AdminPage() {
                   {tavilyStatus.usage.error && (
                     <span className="text-xs text-red-400">Last error: {tavilyStatus.usage.error.detail}</span>
                   )}
+                </div>
+              )}
+              {/* Per-key breakdown — confirms load is spread across every key in the rotating pool. */}
+              {tavilyStatus?.keys && tavilyStatus.keys.length > 0 && (
+                <div className="rounded-lg border border-border/60 divide-y divide-border/60 text-sm">
+                  <div className="px-3 py-2 text-xs text-muted-foreground">
+                    {tavilyStatus.keys.length} key{tavilyStatus.keys.length === 1 ? "" : "s"} in the rotating pool · searches go to the least-used active key
+                  </div>
+                  {tavilyStatus.keys.map((k) => {
+                    const lim = tavilyStatus.usage.perKeyLimit ?? 1000;
+                    const pct = Math.min(100, Math.round((k.used / lim) * 100));
+                    return (
+                      <div key={k.id} className="flex items-center gap-3 px-3 py-2">
+                        <code className="text-xs">{k.masked}</code>
+                        {k.label && <span className="text-xs text-muted-foreground">{k.label}</span>}
+                        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div className={`h-full ${k.exhaustedThisMonth ? "bg-red-500" : pct >= 90 ? "bg-amber-500" : "bg-green-500"}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-xs tabular-nums text-muted-foreground">{k.used.toLocaleString()}/{lim.toLocaleString()}</span>
+                        <span className={`text-xs ${k.exhaustedThisMonth ? "text-red-400" : "text-green-400"}`}>{k.exhaustedThisMonth ? "exhausted" : "active"}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <div className="flex gap-2">

@@ -33,7 +33,7 @@ const PAGE_NAMES: Record<string, string> = {
 // (activeKeys × per-key limit) plus how many keys are still live, so it reflects everything
 // rather than a single key. Polls every 30s.
 function TavilyUsagePill() {
-  const [usage, setUsage] = useState<{ enabled: boolean; used: number; limit: number; near: boolean; over: boolean; poolTotal: number; poolActive: number } | null>(null);
+  const [usage, setUsage] = useState<{ enabled: boolean; used: number; limit: number; perKeyLimit?: number; near: boolean; over: boolean; poolTotal: number; poolActive: number } | null>(null);
 
   useEffect(() => {
     const load = () => fetch("/api/health/keys").then((r) => (r.ok ? r.json() : null)).then((d) => d && setUsage(d.tavily)).catch(() => {});
@@ -44,9 +44,9 @@ function TavilyUsagePill() {
 
   if (!usage?.enabled) return null;
   const poolTotal = usage.poolTotal ?? 0;
-  // Effective monthly capacity = active pool keys × per-key limit (fallback to the single env
-  // key's limit when the pool is empty).
-  const capacity = poolTotal > 0 ? usage.poolActive * usage.limit : usage.limit;
+  // usage.limit is already the aggregate capacity (active pool keys × per-key limit), so use it
+  // directly — multiplying again would square it.
+  const capacity = usage.limit;
   const tone = usage.over
     ? "text-red-400 border-red-500/30 bg-red-500/10"
     : (poolTotal > 0 ? usage.poolActive <= 1 : usage.near)
