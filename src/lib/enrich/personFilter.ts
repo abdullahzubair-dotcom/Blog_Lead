@@ -13,13 +13,7 @@ const NON_PERSON_WORDS = new Set([
   "manager", "platform", "requirements", "product", "marketing", "sales", "support",
 ]);
 
-// Generic / role-based mailbox local-parts — not a specific person's address.
-const ROLE_LOCALPARTS = new Set([
-  "contact", "info", "hello", "hi", "support", "admin", "team", "press", "media", "tips",
-  "editor", "editors", "editorial", "news", "newsroom", "sales", "general", "mail", "office",
-  "help", "noreply", "no-reply", "feedback", "inquiries", "inquiry", "pr", "hq", "hey",
-  "contactus", "webmaster", "postmaster", "abuse", "jobs", "careers", "billing",
-]);
+import { isRoleEmail as isRoleEmailCanonical } from "@/lib/email/roleEmail";
 
 export function isLikelyPersonName(name: string, publication?: string): boolean {
   const n = (name ?? "").trim();
@@ -40,9 +34,12 @@ export function isLikelyPersonName(name: string, publication?: string): boolean 
   return true;
 }
 
+// Delegate to the single canonical role-email detector (src/lib/email/roleEmail.ts) so the
+// enrich/finder path and the storage/send path agree. The canonical version matches compound
+// role addresses too (pressinquiries@, brandlicensing@, no-reply@…), which the old exact-token
+// set here missed — letting pressinquiries@medium.com slip through as a "found" email.
 export function isRoleEmail(email: string): boolean {
-  const local = email.split("@")[0]?.toLowerCase() ?? "";
-  return ROLE_LOCALPARTS.has(local);
+  return isRoleEmailCanonical(email);
 }
 
 // A "guess" = an email we CONSTRUCTED from a domain pattern (not SMTP-verified). Sourced

@@ -14,12 +14,14 @@ const EXACT = new Set([
   "git", "api", "feedback", "newsletter", "community", "social", "advertise", "advertising",
   "ads", "sponsor", "sponsorship", "general", "subscribe", "newsroom", "news", "hello2",
   "mail", "email", "notifications", "notification", "no-reply", "donotreply", "postmaster",
+  "staff", "subscription", "subscriptions", "subs", "developer", "dev", "devrel", "devs",
+  "group", "groups", "reception", "welcome", "service", "services", "orders", "order",
 ]);
 // Collapsed local-part contains one of these → generic (catches compound role addresses).
 const CONTAINS = [
   "pressinquir", "pressoffice", "pressteam", "brandlicens", "adinquir", "mediarelation",
   "newsroom", "noreply", "donotreply", "do-not-reply", "mailerdaemon", "postmaster",
-  "unsubscribe", "pressrelease", "mediateam", "presscontact",
+  "unsubscribe", "pressrelease", "mediateam", "presscontact", "subscription", "groupsubscri",
 ];
 
 export function isRoleEmail(raw: string | null | undefined): boolean {

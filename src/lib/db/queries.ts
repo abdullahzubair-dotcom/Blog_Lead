@@ -1804,6 +1804,27 @@ export async function getContactedAuthorIds(excludeWorkflowId?: string): Promise
     if (excludeWorkflowId && r.workflow_id === excludeWorkflowId) continue;
     set.add(r.author_id);
   }
+  // Email-level propagation: an inbox is contacted, not just a person. The address we emailed
+  // is the author's mailto contact, so map every contacted author → their address(es), then
+  // pull in any OTHER author sharing one of those addresses (common with shared editorial
+  // inboxes) — so we never hit the same inbox twice and both show the same "contacted" tag.
+  if (set.size > 0) {
+    const mailtos = await fetchAllRows<{ author_id: string; value: string }>(
+      "contacts", "author_id, value", (q) => q.eq("type", "mailto"),
+    );
+    const contactedAddrs = new Set<string>();
+    for (const c of mailtos) {
+      if (!set.has(c.author_id)) continue;
+      const addr = (c.value ?? "").replace(/^mailto:/i, "").trim().toLowerCase();
+      if (addr.includes("@")) contactedAddrs.add(addr);
+    }
+    if (contactedAddrs.size > 0) {
+      for (const c of mailtos) {
+        const addr = (c.value ?? "").replace(/^mailto:/i, "").trim().toLowerCase();
+        if (addr && contactedAddrs.has(addr)) set.add(c.author_id);
+      }
+    }
+  }
   // Apply manual overrides from the prospect drawer: true → force contacted, false → force
   // NOT contacted ("email them again"). This wins over the derived history above.
   const overrides = await fetchAllRows<{ id: string; contacted_override: boolean | null }>(
@@ -1828,13 +1849,35 @@ export async function setAuthorDiscarded(authorId: string, discarded: boolean): 
 }
 
 // Whether ONE author counts as contacted right now (derived history OR manual override).
+// "History" includes the SHARED-INBOX case: if any of this author's email addresses was
+// already emailed — even via a different author — this author counts as contacted too.
 export async function isAuthorContacted(authorId: string): Promise<{ contacted: boolean; override: boolean | null; hasHistory: boolean }> {
-  const [{ data: author }, { data: emails }] = await Promise.all([
+  const [{ data: author }, { data: ownEmails }, { data: myContacts }] = await Promise.all([
     supabaseAdmin.from("authors").select("contacted_override").eq("id", authorId).maybeSingle(),
     supabaseAdmin.from("outreach_emails").select("id").eq("author_id", authorId).in("status", ["sent", "scheduled"]).limit(1),
+    supabaseAdmin.from("contacts").select("value").eq("author_id", authorId).eq("type", "mailto"),
   ]);
+  let hasHistory = (ownEmails ?? []).length > 0;
+  // Shared-inbox propagation: was any of this author's addresses already emailed via ANOTHER
+  // author? Find the authors that share this author's mailto address(es), then check whether
+  // any of them has outreach history. (recipient = the author's mailto contact, so we match on
+  // the address, not a non-existent recipient column.)
+  if (!hasHistory) {
+    const addrs = [...new Set((myContacts ?? [])
+      .map((c: any) => (c.value ?? "").trim().toLowerCase())
+      .filter((v: string) => v.includes("@")))];
+    if (addrs.length > 0) {
+      const { data: sharers } = await supabaseAdmin
+        .from("contacts").select("author_id").eq("type", "mailto").in("value", addrs as string[]);
+      const sharerIds = [...new Set((sharers ?? []).map((s: any) => s.author_id).filter((x: string) => x !== authorId))];
+      if (sharerIds.length > 0) {
+        const { data } = await supabaseAdmin
+          .from("outreach_emails").select("id").in("author_id", sharerIds).in("status", ["sent", "scheduled"]).limit(1);
+        if ((data ?? []).length > 0) hasHistory = true;
+      }
+    }
+  }
   const override = (author?.contacted_override ?? null) as boolean | null;
-  const hasHistory = (emails ?? []).length > 0;
   const contacted = override === true ? true : override === false ? false : hasHistory;
   return { contacted, override, hasHistory };
 }
