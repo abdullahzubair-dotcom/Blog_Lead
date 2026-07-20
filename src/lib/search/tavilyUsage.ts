@@ -75,25 +75,35 @@ export async function listTavilyKeys(): Promise<PoolKeyStatus[]> {
 // The next key to use: the LEAST-USED non-exhausted pool entry (balances load across all keys
 // and naturally backs off a key that's taken more traffic). Falls back to the legacy override,
 // then the env key, when the pool is empty.
-export async function getActiveTavilyKey(): Promise<{ id: string; key: string } | null> {
+export async function getActiveTavilyKey(reserve = false): Promise<{ id: string; key: string } | null> {
   const month = monthTag();
   const active = (await readPool()).filter((e) => e.exhaustedMonth !== month);
+  let chosen: { id: string; key: string } | null = null;
   if (active.length > 0) {
     const counts = await readCounts(active.map((e) => e.id));
     // Least-used first; stable tiebreak on pool order so behavior is deterministic.
     active.sort((a, b) => (counts[a.id] ?? 0) - (counts[b.id] ?? 0));
     for (const e of active) {
       const key = decryptSecret(e.enc);
-      if (key) return { id: e.id, key };
+      if (key) { chosen = { id: e.id, key }; break; }
     }
   }
-  const r = redis();
-  if (r) {
-    const legacy = decryptSecret(await r.get<string>(KEY_OVERRIDE_KEY).catch(() => null));
-    if (legacy) return { id: ENV_ID, key: legacy };
+  if (!chosen) {
+    const r = redis();
+    if (r) {
+      const legacy = decryptSecret(await r.get<string>(KEY_OVERRIDE_KEY).catch(() => null));
+      if (legacy) chosen = { id: ENV_ID, key: legacy };
+    }
+    if (!chosen) { const env = process.env.TAVILY_API_KEY; if (env) chosen = { id: ENV_ID, key: env }; }
   }
-  const env = process.env.TAVILY_API_KEY;
-  return env ? { id: ENV_ID, key: env } : null;
+  // Reserve: bump this key's per-key counter NOW so concurrent callers see it as more-used and
+  // pick a different key (fixes least-used balancing being defeated under concurrency, since the
+  // separate usage tally is fire-and-forget). Only search callers reserve; getTavilyKey doesn't.
+  if (chosen && reserve) {
+    const r = redis();
+    if (r) { const pk = keyCountKey(chosen.id); const n = await r.incr(pk).catch(() => 0); if (n === 1) await r.expire(pk, 60 * 60 * 24 * 40).catch(() => {}); }
+  }
+  return chosen;
 }
 
 // Back-compat single-value accessor (used where rotation isn't needed).
@@ -131,16 +141,15 @@ export async function resetTavilyUsage(): Promise<void> {
   await Promise.all([...pool.map((e) => e.id), ENV_ID].map((id) => r.del(keyCountKey(id)).catch(() => {})));
 }
 
-// Count a call toward the monthly-usage banner: the global tally + the specific key's tally.
-export async function trackTavilyCall(keyId?: string): Promise<void> {
+// Count a call toward the GLOBAL monthly-usage tally. The per-key tally is incremented at
+// selection time by getActiveTavilyKey(reserve=true) so it stays accurate under concurrency;
+// keyId is kept for back-compat but unused here (prevents double-counting per key).
+export async function trackTavilyCall(_keyId?: string): Promise<void> {
   const r = redis();
   if (!r) return;
   const k = monthKey();
   const n = await r.incr(k).catch(() => 0);
   if (n === 1) await r.expire(k, 60 * 60 * 24 * 40).catch(() => {}); // ~40d, spans the month
-  const pk = keyCountKey(keyId || ENV_ID);
-  const pn = await r.incr(pk).catch(() => 0);
-  if (pn === 1) await r.expire(pk, 60 * 60 * 24 * 40).catch(() => {});
 }
 
 // Flag a hard failure (bad key / quota exceeded / rate limited). Auto-expires in 24h.

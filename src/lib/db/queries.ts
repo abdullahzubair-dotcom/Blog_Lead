@@ -563,8 +563,18 @@ export async function getProspects(opts: {
     const authors = await fetchAllRows<{ id: string; primary_domain_id: string | null }>("authors", "id, primary_domain_id");
     filterSets.push(new Set(authors.filter((a) => a.primary_domain_id && domIds.has(a.primary_domain_id)).map((a) => a.id)));
     if (opts.qualifiedOnly) {
+      // Relevancy pass = best relevance >= RELEVANCE_MIN OR >= 5 mention rows across the author's
+      // articles — exactly what qualifyProspect uses for the per-card badge, so the two agree.
       const rel = await fetchAllRows<{ author_id: string }>("scores", "author_id", (q) => q.gte("relevance", RELEVANCE_MIN));
-      filterSets.push(new Set(rel.map((r) => r.author_id)));
+      const relevantSet = new Set(rel.map((r) => r.author_id));
+      const mentionRows = await fetchAllRows<{ article_id: string }>("mentions", "article_id");
+      const perArticle = new Map<string, number>();
+      for (const m of mentionRows) perArticle.set(m.article_id, (perArticle.get(m.article_id) ?? 0) + 1);
+      const aaRows = await fetchAllRows<{ author_id: string; article_id: string }>("article_authors", "author_id, article_id");
+      const perAuthor = new Map<string, number>();
+      for (const aa of aaRows) perAuthor.set(aa.author_id, (perAuthor.get(aa.author_id) ?? 0) + (perArticle.get(aa.article_id) ?? 0));
+      for (const [id, n] of perAuthor) if (n >= 5) relevantSet.add(id);
+      filterSets.push(relevantSet);
     }
   }
 
@@ -631,12 +641,9 @@ export async function getProspects(opts: {
   if (pageAuthorIds.length === 0) return { prospects: [], total };
 
   // ─── Fetch full author data for this page ─────────────────────────────────
-  const { data, error } = await supabaseAdmin
-    .from("authors")
-    .select(
-      // Every prospect has ≥1 article (discovery authors always do; manual adds require an
-      // article link). The !inner join enforces "prospects are article authors".
-      `*,
+  // Chunk the id list — a single .in() with hundreds/thousands of ids (e.g. export uses
+  // limit 2000) overflows PostgREST's URL length and 400s. 200 ids/request is safe.
+  const SELECT = `*,
       domain:domains(*),
       article_authors!inner(
         article:articles(
@@ -646,13 +653,16 @@ export async function getProspects(opts: {
         )
       ),
       contacts(*),
-      scores(*)`
-    )
-    .in("id", pageAuthorIds);
-
-  if (error) {
-    console.error("getProspects error:", error);
-    return { prospects: [], total: 0 };
+      scores(*)`;
+  const data: any[] = [];
+  for (let i = 0; i < pageAuthorIds.length; i += 200) {
+    const { data: chunk, error } = await supabaseAdmin
+      .from("authors").select(SELECT).in("id", pageAuthorIds.slice(i, i + 200));
+    if (error) {
+      console.error("getProspects error:", error);
+      return { prospects: [], total: 0 };
+    }
+    if (chunk) data.push(...chunk);
   }
 
   // Re-sort results to match the requested order (IN query doesn't preserve order)
@@ -670,11 +680,14 @@ export async function getProspects(opts: {
 
     const dom = author.domain ?? null;
     const mailtos = (author.contacts ?? []).filter((c: any) => c.type === "mailto");
+    // Use the author's BEST relevance across all their score rows (not the max-composite row's),
+    // so this matches the qualifiedOnly filter which admits an author on ANY row >= RELEVANCE_MIN.
+    const maxRelevance = Math.max(0, ...(author.scores ?? []).map((s: any) => s.relevance ?? 0));
     const qualification = qualifyProspect({
       dr: dom?.dr ?? null,
       organicTraffic: dom?.organic_traffic ?? null,
       usTrafficShare: dom?.us_traffic_share ?? null,
-      relevance: score?.relevance ?? 0,
+      relevance: maxRelevance,
       mentionCount: allMentions.length,
       articleCount: articles.length,
       hasEmail: mailtos.length > 0,

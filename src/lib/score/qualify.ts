@@ -54,7 +54,7 @@ export function qualifyProspect(i: QualifyInput): Qualification {
   // rewards an actionable (emailable) prospect. Weights renormalize over present signals.
   const drScore = i.dr == null ? null : Math.min(100, i.dr);
   const relScore = Math.min(100, i.relevance);
-  const reach = i.hasEmail ? 100 : Math.round((i.contactConfidence || 0) * 100);
+  const reach = i.hasEmail ? 100 : Math.min(100, Math.round((i.contactConfidence || 0) * 100));
   const trafficScore = i.organicTraffic == null ? null : Math.min(100, Math.round((i.organicTraffic / TRAFFIC_MIN) * 60)); // 10K -> 60, caps at 100
   const usScore = i.usTrafficShare == null ? null : Math.min(100, Math.round(i.usTrafficShare));
 

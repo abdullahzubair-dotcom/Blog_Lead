@@ -19,6 +19,7 @@ import {
   Loader2,
   Bell,
   Unlink,
+  BookOpen,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,7 @@ const NAV = [
   { name: "Emails", href: "/emails", icon: Mail },
   { name: "Sending", href: "/sending", icon: Send },
   { name: "Inbox", href: "/inbox", icon: Inbox },
+  { name: "Handbook", href: "/handbook", icon: BookOpen },
   { name: "Notifications", href: "/notifications", icon: Bell },
   { name: "Link Audit", href: "/link-audit", icon: Unlink },
   { name: "Admin", href: "/admin", icon: Rocket },

@@ -33,9 +33,9 @@ export async function webSearch(query: string, count = 8, signal?: AbortSignal, 
       // Try successive keys from the pool until one works or we run out (cap attempts so a
       // pool of dead keys can't loop forever).
       for (let attempt = 0; attempt < 8; attempt++) {
-        const active = await getActiveTavilyKey();
+        const active = await getActiveTavilyKey(true); // reserve: bumps this key's per-key count atomically
         if (!active) { onError?.("no Tavily key available (pool empty / all exhausted)"); return []; }
-        void trackTavilyCall(active.id); // count toward this key's + the global monthly-usage tally
+        void trackTavilyCall(); // count toward the global monthly-usage tally (per-key done at reserve)
         const res = await fetch("https://api.tavily.com/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

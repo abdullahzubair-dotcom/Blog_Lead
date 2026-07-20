@@ -79,8 +79,11 @@ export async function POST(req: NextRequest) {
         continue;
       }
       // Dedupe by destination: if this exact inbox was already emailed (any author), don't
-      // email it again — this is what stops the same address getting hit over and over.
-      if (await recipientAlreadyContacted(email.recipient, email.id).catch(() => false)) {
+      // email it again — stops the same address getting hit over and over. ONLY for initial
+      // sends; follow-ups and negotiation replies are intentional threaded continuations to a
+      // recipient we've deliberately already contacted, so they must not be blocked here.
+      const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
+      if (!isThreadReply && await recipientAlreadyContacted(email.recipient, email.id).catch(() => false)) {
         await updateOutreachEmail(email.id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
         results.push({ id: email.id, ok: false, error: "duplicate recipient" });
         continue;
@@ -97,9 +100,11 @@ export async function POST(req: NextRequest) {
       // Also a last-second guard — if the recipient replied or converted since this follow-up
       // was scheduled, park it instead of nagging someone who already engaged.
       let inReplyTo: string | undefined;
-      if ((email as any).kind === "followup" && (email as any).parent_id) {
+      if (isThreadReply && (email as any).parent_id) {
         const parent = await getFollowupParent((email as any).parent_id).catch(() => null);
-        if (parent?.replied_at || parent?.success_at) {
+        // A NUDGE follow-up must not go out if they've since replied/converted. A NEGOTIATION
+        // reply is the opposite — it's our answer TO their reply — so it always proceeds.
+        if ((email as any).kind === "followup" && (parent?.replied_at || parent?.success_at)) {
           await updateOutreachEmail(email.id, { status: "draft", scheduled_at: null });
           results.push({ id: email.id, ok: false, error: "parent replied — follow-up skipped" });
           continue;

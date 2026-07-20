@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
 import { isRoleEmail } from "@/lib/email/roleEmail";
+import { acquireLock, releaseLock, incrDailyCount } from "@/lib/redis";
 
 export const maxDuration = 60;
 
@@ -9,46 +10,65 @@ export const maxDuration = 60;
 // "Send now" on a queued row). Uses the stamped sender's own Gmail.
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const email = await getOutreachEmailWithRecipient(id);
-  if (!email) return NextResponse.json({ error: "not found" }, { status: 404 });
-  if (email.status === "sent") return NextResponse.json({ ok: true, already: true });
-  if (!email.recipient) {
-    await updateOutreachEmail(id, { status: "failed", error: "No recipient email address" });
-    return NextResponse.json({ ok: false, error: "No recipient email address" });
-  }
-  if (isRoleEmail(email.recipient)) {
-    await updateOutreachEmail(id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
-    return NextResponse.json({ ok: false, error: "generic/role address — not sent" });
-  }
-  if (await recipientAlreadyContacted(email.recipient, id).catch(() => false)) {
-    await updateOutreachEmail(id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
-    return NextResponse.json({ ok: false, error: "this address was already emailed — not sent" });
-  }
 
-  // A follow-up threads into its parent; skip if the recipient already engaged.
-  let inReplyTo: string | undefined;
-  if ((email as any).kind === "followup" && (email as any).parent_id) {
-    const parent = await getFollowupParent((email as any).parent_id).catch(() => null);
-    if (parent?.replied_at || parent?.success_at) {
-      await updateOutreachEmail(id, { status: "draft", scheduled_at: null });
-      return NextResponse.json({ ok: false, error: "Recipient already replied — follow-up skipped." });
+  // Per-email lock so a "Send now" click can't race the cron processor (or a second click)
+  // and double-send the same email to the same person.
+  const token = `sn-${id}`;
+  if (!(await acquireLock(`lock:send:${id}`, 90, token))) {
+    return NextResponse.json({ ok: false, error: "This email is already being sent." });
+  }
+  try {
+    const email = await getOutreachEmailWithRecipient(id);
+    if (!email) return NextResponse.json({ error: "not found" }, { status: 404 });
+    if (email.status === "sent") return NextResponse.json({ ok: true, already: true });
+    if (!email.recipient) {
+      await updateOutreachEmail(id, { status: "failed", error: "No recipient email address" });
+      return NextResponse.json({ ok: false, error: "No recipient email address" });
     }
-    inReplyTo = parent?.message_id ?? undefined;
-  }
+    if (isRoleEmail(email.recipient)) {
+      await updateOutreachEmail(id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
+      return NextResponse.json({ ok: false, error: "generic/role address — not sent" });
+    }
+    // Threaded replies (follow-ups, negotiation replies) go to someone we deliberately already
+    // emailed, so the "already contacted" dedupe must NOT block them — it's only for new sends.
+    const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
+    if (!isThreadReply && await recipientAlreadyContacted(email.recipient, id).catch(() => false)) {
+      await updateOutreachEmail(id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
+      return NextResponse.json({ ok: false, error: "this address was already emailed — not sent" });
+    }
 
-  const res = await deliverOutreach({
-    to: email.recipient,
-    subject: email.subject ?? "(no subject)",
-    body: email.body ?? "",
-    sender: (email as any).sender_email ?? null,
-    sentBy: (email as any).sent_by_email ?? null,
-    inReplyTo, references: inReplyTo,
-  });
+    let inReplyTo: string | undefined;
+    if (isThreadReply && (email as any).parent_id) {
+      const parent = await getFollowupParent((email as any).parent_id).catch(() => null);
+      // A nudge follow-up is skipped if they've since replied; a negotiation reply is our answer
+      // TO their reply, so it always proceeds.
+      if ((email as any).kind === "followup" && (parent?.replied_at || parent?.success_at)) {
+        await updateOutreachEmail(id, { status: "draft", scheduled_at: null });
+        return NextResponse.json({ ok: false, error: "Recipient already replied — follow-up skipped." });
+      }
+      inReplyTo = parent?.message_id ?? undefined;
+    }
 
-  if (res.ok) {
-    await updateOutreachEmail(id, { status: "sent", sent_at: new Date().toISOString(), error: undefined, message_id: res.messageId ?? undefined });
-    return NextResponse.json({ ok: true });
+    const res = await deliverOutreach({
+      to: email.recipient,
+      subject: email.subject ?? "(no subject)",
+      body: email.body ?? "",
+      sender: (email as any).sender_email ?? null,
+      sentBy: (email as any).sent_by_email ?? null,
+      inReplyTo, references: inReplyTo,
+    });
+
+    if (res.ok) {
+      await updateOutreachEmail(id, { status: "sent", sent_at: new Date().toISOString(), error: undefined, message_id: res.messageId ?? undefined });
+      // Count manual sends toward the sender's daily cap so the cron processor's cap stays honest
+      // (manual send is intentional, so we don't hard-block it, but it must still be counted).
+      const sender = (email as any).sender_email as string | undefined;
+      if (sender) await incrDailyCount(sender, new Date().toISOString().slice(0, 10)).catch(() => {});
+      return NextResponse.json({ ok: true });
+    }
+    await updateOutreachEmail(id, { status: "failed", error: res.error });
+    return NextResponse.json({ ok: false, error: res.error });
+  } finally {
+    await releaseLock(`lock:send:${id}`, token);
   }
-  await updateOutreachEmail(id, { status: "failed", error: res.error });
-  return NextResponse.json({ ok: false, error: res.error });
 }
