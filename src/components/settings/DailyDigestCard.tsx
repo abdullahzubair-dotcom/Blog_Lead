@@ -48,7 +48,7 @@ export function DailyDigestCard() {
       <CardHeader>
         <CardTitle>Daily digest email</CardTitle>
         <CardDescription>
-          A once-a-day summary emailed automatically: how many emails each person has scheduled, template usage and richness, and which sites you&apos;re targeting. Toggle off and the nightly send is skipped.
+          A once-a-day summary emailed automatically: how many emails each person has scheduled, template usage and richness, and which sites you&apos;re targeting. Goes to the recipient below with the whole team CC&apos;d. Toggle off and the nightly send is skipped.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

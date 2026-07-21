@@ -96,11 +96,14 @@ export async function buildDailyDigest(): Promise<{ subject: string; text: strin
   return { subject: `Outreach digest — ${totalScheduled} scheduled, ${totalSent} sent`, text: lines.join("\n") };
 }
 
-export async function sendDailyDigest(force = false): Promise<{ sent: boolean; skipped?: string; recipient?: string; error?: string }> {
+export async function sendDailyDigest(force = false): Promise<{ sent: boolean; skipped?: string; recipient?: string; cc?: number; error?: string }> {
   const cfg = await getDigestConfig();
   if (!cfg.enabled && !force) return { sent: false, skipped: "disabled" };
   if (!cfg.recipient) return { sent: false, skipped: "no recipient" };
   const { subject, text } = await buildDailyDigest();
-  const res = await sendEmail({ to: cfg.recipient, subject, body: text }).catch((e: any) => ({ ok: false, error: e?.message }));
-  return res.ok ? { sent: true, recipient: cfg.recipient } : { sent: false, error: (res as any).error, recipient: cfg.recipient };
+  // CC every team member (all configured website users) so the whole team sees the digest.
+  const users = await fetchAllRows<{ user_email: string }>("user_email_config", "user_email").catch(() => []);
+  const cc = [...new Set(users.map((u) => (u.user_email ?? "").trim().toLowerCase()).filter((e) => e.includes("@") && e !== cfg.recipient.toLowerCase()))];
+  const res = await sendEmail({ to: cfg.recipient, cc: cc.length ? cc.join(", ") : undefined, subject, body: text }).catch((e: any) => ({ ok: false, error: e?.message }));
+  return res.ok ? { sent: true, recipient: cfg.recipient, cc: cc.length } : { sent: false, error: (res as any).error, recipient: cfg.recipient, cc: cc.length };
 }
