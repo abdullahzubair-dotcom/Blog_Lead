@@ -11,7 +11,7 @@ export async function GET() {
     const settings = await getNegotiationSettings();
     const { data } = await supabaseAdmin
       .from("outreach_emails")
-      .select("id, author_id, subject, replied_at, bounced_at, reply_kind, reply_sentiment, reply_excerpt, reply_subject, negotiation_status, ai_managed, max_offer, sent_at, created_at, sender_email, author:authors(full_name, domain:domains(host, name, dr, organic_traffic, us_traffic_share))")
+      .select("id, author_id, subject, status, replied_at, bounced_at, reply_kind, reply_sentiment, reply_excerpt, reply_subject, negotiation_status, ai_managed, max_offer, sent_at, created_at, sender_email, author:authors(full_name, domain:domains(host, name, dr, organic_traffic, us_traffic_share))")
       .eq("kind", "initial")
       .order("sent_at", { ascending: false, nullsFirst: false })
       .limit(1000);
@@ -33,13 +33,19 @@ export async function GET() {
       const dom = r.author?.domain ?? null;
       const tier = maxOfferFor(dom?.dr ?? null, dom?.organic_traffic ?? null, dom?.us_traffic_share ?? null, settings.pricing_rules);
       const ceiling = r.max_offer != null ? Number(r.max_offer) : (tier?.offer ?? null);
-      let category: string = "needs_reply";
+      const draft = draftByParent.get(r.id);
+      // Buckets: bounced / automated / hard_no / agreed take precedence. Then a reply that we
+      // have NOT answered yet = needs_reply; one we've replied to = negotiating. No reply yet
+      // (AI-managed, scheduled or sent) = queued (waiting on them).
+      let category: string;
       if (r.bounced_at) category = "bounced";
       else if (r.reply_kind === "auto") category = "automated";
       else if (r.negotiation_status === "declined") category = "hard_no";
       else if (r.negotiation_status === "agreed") category = "agreed";
-      else if (r.replied_at) category = "negotiating";
+      else if (r.replied_at) category = draft?.status === "sent" ? "negotiating" : "needs_reply";
+      else category = "queued";
       return {
+        status: r.status,
         id: r.id, authorId: r.author_id, name: r.author?.full_name ?? "Unknown",
         publication: dom?.name ?? dom?.host ?? "", host: dom?.host ?? "", dr: dom?.dr ?? null,
         ceiling, category, replyKind: r.reply_kind, sentiment: r.reply_sentiment,

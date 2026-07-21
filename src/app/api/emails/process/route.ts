@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
 import { isRoleEmail } from "@/lib/email/roleEmail";
+import { supabaseAdmin } from "@/lib/db/supabase";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
 import { decryptSecret } from "@/lib/crypto";
 import { acquireLock, releaseLock, incrDailyCount, getDailyCount } from "@/lib/redis";
@@ -138,6 +139,36 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Auto-negotiation — when AI autonomy is ON, every AI-managed thread with a NEW reply we
+    // haven't answered yet gets an AI reply generated and SENT now (bounded per run). This is
+    // what makes the "let AI handle replies" checkbox actually reply on its own.
+    const negotiations = { attempted: 0, sent: 0, drafted: 0, errors: [] as string[] };
+    try {
+      const { getNegotiationSettings } = await import("@/lib/negotiation/settings");
+      const settings = await getNegotiationSettings();
+      if (settings.ai_autonomy) {
+        const { negotiateThread } = await import("@/lib/negotiation/run");
+        const { data: inits } = await supabaseAdmin
+          .from("outreach_emails").select("id, negotiation_status")
+          .eq("kind", "initial").eq("ai_managed", true).not("replied_at", "is", null).limit(40);
+        for (const it of inits ?? []) {
+          if (["agreed", "declined"].includes((it as any).negotiation_status)) continue;
+          const { data: thr } = await supabaseAdmin
+            .from("outreach_emails").select("kind, status, replied_at, reply_kind, sent_at")
+            .or(`id.eq.${(it as any).id},parent_id.eq.${(it as any).id}`);
+          const rowsT = (thr ?? []) as any[];
+          if (rowsT.some((r) => r.reply_kind === "auto")) continue; // autoresponders aren't negotiated
+          const latestReply = rowsT.map((r) => r.replied_at).filter(Boolean).sort().pop();
+          const lastAnswer = rowsT.filter((r) => r.kind === "negotiation" && r.status === "sent").map((r) => r.sent_at).filter(Boolean).sort().pop();
+          if (!latestReply) continue;
+          if (lastAnswer && lastAnswer >= latestReply) continue; // their latest reply already answered
+          negotiations.attempted++;
+          const r = await negotiateThread((it as any).id).catch((e: any) => { negotiations.errors.push(e?.message ?? "negotiate error"); return null; });
+          if (r?.sent) negotiations.sent++; else if (r?.ok) negotiations.drafted++;
+        }
+      }
+    } catch (e: any) { negotiations.errors.push(e?.message ?? "auto-negotiation error"); }
+
     // Auto follow-ups — day-2, no-reply initials get a threaded nudge SCHEDULED (kill-switch
     // respected). They send on a later run when due, threaded into the original.
     let followups = { generated: 0, scheduled: 0, skippedDisabled: false, errors: [] as string[] };
@@ -146,7 +177,7 @@ export async function POST(req: NextRequest) {
       followups = await runFollowups();
     } catch (e: any) { followups.errors.push(e?.message ?? "followup error"); }
 
-    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, followups, results });
+    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, negotiations, followups, results });
   } finally {
     await releaseLock(LOCK_KEY, lockToken);
   }

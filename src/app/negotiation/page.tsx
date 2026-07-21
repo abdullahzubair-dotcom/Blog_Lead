@@ -16,7 +16,7 @@ import { toast } from "sonner";
 
 interface Thread {
   id: string; authorId: string; name: string; publication: string; host: string;
-  dr: number | null; ceiling: number | null; category: string;
+  dr: number | null; ceiling: number | null; category: string; status: string | null;
   replyKind: string | null; sentiment: string | null; negotiationStatus: string | null;
   aiManaged: boolean; subject: string; replyExcerpt: string | null;
   draftStatus: string | null; draftBody: string | null;
@@ -24,6 +24,7 @@ interface Thread {
 interface Msg { from: "us" | "them"; body: string; at: string | null }
 
 const CATS = [
+  { key: "queued", label: "Queued" },
   { key: "needs_reply", label: "Needs reply" },
   { key: "negotiating", label: "Negotiating" },
   { key: "agreed", label: "Agreed" },
@@ -41,7 +42,7 @@ export default function NegotiationPage() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [autonomy, setAutonomy] = useState(false);
   const [currency, setCurrency] = useState("USD");
-  const [tab, setTab] = useState("needs_reply");
+  const [tab, setTab] = useState("queued");
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [priceOpen, setPriceOpen] = useState(false);
@@ -191,6 +192,11 @@ export default function NegotiationPage() {
                   <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)} className="shrink-0">
                     {busy === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Sparkles className="h-4 w-4 mr-1.5" />{t.draftBody ? "Regenerate" : autonomy ? "AI reply" : "Draft AI reply"}</>}
                   </Button>
+                )}
+                {t.category === "queued" && (
+                  <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                    {t.status === "sent" ? "Sent · awaiting reply" : t.status === "scheduled" ? "Queued to send" : (t.status ?? "queued")}
+                  </span>
                 )}
               </div>
 
