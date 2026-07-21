@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2 } from "lucide-react";
+import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play } from "lucide-react";
 import { toast } from "sonner";
 
 interface Thread {
@@ -52,6 +52,7 @@ export default function NegotiationPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [convo, setConvo] = useState<Record<string, Msg[]>>({});
   const [editBody, setEditBody] = useState<Record<string, string>>({});
+  const [processing, setProcessing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -112,6 +113,20 @@ export default function NegotiationPage() {
     } catch (e: any) { toast.error(e?.message ?? "failed"); } finally { setBusy(null); }
   };
 
+  // Process now: check for new replies over IMAP and (if autonomy is on) auto-negotiate them,
+  // same as the Sending page's button — so you don't have to leave this page to make it run.
+  const processNow = async () => {
+    setProcessing(true);
+    try {
+      const r = await fetch("/api/emails/process", { method: "POST" }).then((x) => x.json());
+      const rep = r?.replies?.repliesFound ?? 0;
+      const neg = r?.negotiations;
+      const negTxt = neg && (neg.sent || neg.drafted) ? ` · AI: ${neg.sent} sent, ${neg.drafted} drafted` : "";
+      toast.success(`Checked replies (${rep} new)${negTxt}`);
+      load();
+    } catch { toast.error("Process failed"); } finally { setProcessing(false); }
+  };
+
   const sendOrDiscard = async (t: Thread, action: "send" | "discard") => {
     setBusy(t.id);
     try {
@@ -134,6 +149,9 @@ export default function NegotiationPage() {
           <Badge variant="outline" className={autonomy ? "text-amber-500 border-amber-500/40 bg-amber-500/10" : "text-muted-foreground"}>
             <ShieldAlert className="h-3 w-3 mr-1" />{autonomy ? "Autonomy ON — AI sends itself" : "Autonomy OFF — AI drafts for approval"}
           </Badge>
+          <Button variant="outline" size="sm" disabled={processing} onClick={processNow} title="Check for new replies now and, if autonomy is on, auto-negotiate them">
+            {processing ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Play className="h-4 w-4 mr-1.5" />}Process now
+          </Button>
           <Link href="/handbook"><Button variant="outline" size="sm"><BookOpen className="h-4 w-4 mr-1.5" />Handbook</Button></Link>
           <Button variant="ghost" size="icon-sm" onClick={load}><RefreshCw className="h-4 w-4" /></Button>
         </div>
