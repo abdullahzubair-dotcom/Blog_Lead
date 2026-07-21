@@ -1446,10 +1446,14 @@ export async function upsertLinkedinMessage(data: {
 // ─── Outreach Emails ──────────────────────────────────────────────────────────
 
 export async function getWorkflowEmails(workflowId: string): Promise<OutreachEmail[]> {
+  // Only INITIAL outreach — the Emails page composes/sends initials. Follow-ups and negotiation
+  // replies (kind='followup'/'negotiation') live on the Sending/Negotiation pages; without this
+  // filter a newer negotiation draft would shadow the initial per author and show "0 ready".
   const { data, error } = await supabaseAdmin
     .from("outreach_emails")
     .select("*, author:authors(id, full_name, avatar_url, primary_domain_id, domain:domains(name, host))")
     .eq("workflow_id", workflowId)
+    .or("kind.eq.initial,kind.is.null")
     .order("created_at", { ascending: true });
   if (error) throw error;
   return data ?? [];
