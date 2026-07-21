@@ -2,7 +2,7 @@ import { supabaseAdmin } from "./supabase";
 
 // Supabase REST API hard-caps at 1000 rows per request regardless of .limit().
 // This helper paginates through any simple select query to get all rows.
-async function fetchAllRows<T>(
+export async function fetchAllRows<T>(
   table: string,
   select: string,
   apply?: (q: any) => any
@@ -1861,10 +1861,13 @@ export async function stopPendingFollowupsForAuthor(authorId: string, reason: st
 // email the same person twice across campaigns. "Contacted" = a sent or scheduled
 // outreach email in any workflow other than the one given.
 export async function getContactedAuthorIds(excludeWorkflowId?: string): Promise<Set<string>> {
+  // "Contacted" = actually emailed, judged by durable signals (sent_at / replied_at /
+  // bounced_at) as well as current status. Regenerating an email resets status to 'ready' but
+  // leaves sent_at/replied_at intact, so status alone would wrongly forget an emailed person.
   const rows = await fetchAllRows<{ author_id: string; workflow_id: string }>(
     "outreach_emails",
     "author_id, workflow_id",
-    (q) => q.in("status", ["sent", "scheduled"]),
+    (q) => q.or("status.in.(sent,scheduled),sent_at.not.is.null,replied_at.not.is.null,bounced_at.not.is.null"),
   );
   const set = new Set<string>();
   for (const r of rows) {

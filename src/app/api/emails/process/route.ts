@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent } from "@/lib/db/queries";
 import { isRoleEmail } from "@/lib/email/roleEmail";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
@@ -79,16 +79,11 @@ export async function POST(req: NextRequest) {
         results.push({ id: email.id, ok: false, error: "role address" });
         continue;
       }
-      // Dedupe by destination: if this exact inbox was already emailed (any author), don't
-      // email it again — stops the same address getting hit over and over. ONLY for initial
-      // sends; follow-ups and negotiation replies are intentional threaded continuations to a
-      // recipient we've deliberately already contacted, so they must not be blocked here.
+      // Duplicate-address dedupe is handled UPSTREAM now: at schedule time (getContactedAuthorIds,
+      // email-address aware) and shown as a "contacted" tag on the Emails page with a manual
+      // override. We deliberately do NOT silently drop here — if it got scheduled, it sends
+      // (honoring the human's override). Threaded replies were always exempt anyway.
       const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
-      if (!isThreadReply && await recipientAlreadyContacted(email.recipient, email.id).catch(() => false)) {
-        await updateOutreachEmail(email.id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
-        results.push({ id: email.id, ok: false, error: "duplicate recipient" });
-        continue;
-      }
 
       const sender = (email as any).sender_email as string | undefined;
       const sentBy = (email as any).sent_by_email as string | undefined;

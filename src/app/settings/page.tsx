@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { UserEmailConfigCard } from "@/components/settings/UserEmailConfig";
+import { DailyDigestCard } from "@/components/settings/DailyDigestCard";
 import { TavilyKeyManager } from "@/components/settings/TavilyKeyManager";
 
 interface ConfigItem {
@@ -41,6 +42,8 @@ export default function SettingsPage() {
 
       {/* Per-user sending identity (each user sends from their own Gmail) */}
       <UserEmailConfigCard />
+
+      <DailyDigestCard />
 
       {/* Rotating Tavily key pool — add many keys; auto-rolls over on quota */}
       <TavilyKeyManager />

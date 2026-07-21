@@ -33,6 +33,10 @@ export async function POST(req: NextRequest) {
   // posts its own Slack digest via the shared link-audit webhook.
   const pageHealth = await hit("/api/indexing/cron").then((r) => r.json()).catch((e) => ({ error: e?.message }));
 
+  // Daily ops digest email (per-person scheduled counts, template usage, site usage). Only sends
+  // if the toggle in Settings is on; recipient is configurable there.
+  const digest = await hit("/api/digest/daily").then((r) => r.json()).catch((e) => ({ error: e?.message }));
+
   // Daily email finding — dig out emails for any authors still missing one (only_new keeps it
   // to authors never searched, so it doesn't re-spend credits on the same people every day).
   const finder = await fetch(`${base}/api/enrich/run?key=${encodeURIComponent(secret)}`, {
@@ -43,7 +47,7 @@ export async function POST(req: NextRequest) {
   // cron returns quickly; Vercel keeps the function alive for after() work.
   after(async () => { await hit("/api/notifications/check").catch(() => {}); });
 
-  return NextResponse.json({ ok: true, audit, pageHealth, finder, notifications: "triggered" });
+  return NextResponse.json({ ok: true, audit, pageHealth, digest, finder, notifications: "triggered" });
 }
 
 export async function GET(req: NextRequest) {

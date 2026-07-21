@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent, recipientAlreadyContacted } from "@/lib/db/queries";
+import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
 import { isRoleEmail } from "@/lib/email/roleEmail";
 import { acquireLock, releaseLock, incrDailyCount } from "@/lib/redis";
@@ -29,13 +29,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       await updateOutreachEmail(id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
       return NextResponse.json({ ok: false, error: "generic/role address — not sent" });
     }
-    // Threaded replies (follow-ups, negotiation replies) go to someone we deliberately already
-    // emailed, so the "already contacted" dedupe must NOT block them — it's only for new sends.
+    // Manual "Send now" is an explicit human action — no silent duplicate-address block here.
+    // The Emails page shows a "contacted" tag (with override) before you ever get to send.
     const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
-    if (!isThreadReply && await recipientAlreadyContacted(email.recipient, id).catch(() => false)) {
-      await updateOutreachEmail(id, { status: "failed", error: "Skipped: this address was already emailed", followup_skipped: true });
-      return NextResponse.json({ ok: false, error: "this address was already emailed — not sent" });
-    }
 
     let inReplyTo: string | undefined;
     if (isThreadReply && (email as any).parent_id) {

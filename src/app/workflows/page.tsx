@@ -232,6 +232,7 @@ export default function WorkflowsPage() {
   const [addingId, setAddingId] = useState<string | null>(null);
 
   // AI find: describe the writers you want → LLM keywords → search ALL prospects → add all.
+  const [sitesOpen, setSitesOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiIncludeContacted, setAiIncludeContacted] = useState(false);
@@ -409,6 +410,39 @@ export default function WorkflowsPage() {
   });
 
   const includedCount = prospects.filter((p) => p.included).length;
+
+  // Unique websites across all prospects — each author's primary domain + every domain they've
+  // written an article on. Deduped by host, with DR, and the set of prospects who touch each
+  // site. Powers the "Check sites DR" popup.
+  const sites = (() => {
+    const map = new Map<string, { host: string; name: string | null; dr: number | null; authorIds: Set<string> }>();
+    for (const p of prospects) {
+      const doms: any[] = [];
+      if (p.domain) doms.push(p.domain);
+      for (const a of (p.articles ?? [])) if ((a as any).domain) doms.push((a as any).domain);
+      const seen = new Set<string>();
+      for (const d of doms) {
+        const host = (d?.host || "").replace(/^www\./, "").trim();
+        if (!host || seen.has(host)) continue;
+        seen.add(host);
+        const cur = map.get(host) ?? { host, name: d.name ?? null, dr: d.dr ?? null, authorIds: new Set<string>() };
+        if (cur.dr == null && d.dr != null) cur.dr = d.dr;
+        cur.authorIds.add(p.author_id);
+        map.set(host, cur);
+      }
+    }
+    return [...map.values()].sort((a, b) => (b.dr ?? -1) - (a.dr ?? -1));
+  })();
+
+  // Uncheck a site => deselect every prospect who has written on it (they won't be emailed).
+  async function toggleSite(authorIds: string[], included: boolean) {
+    if (!selected) return;
+    const set = new Set(authorIds);
+    setProspects((ps) => ps.map((p) => (set.has(p.author_id) ? { ...p, included } : p)));
+    await fetch(`/api/workflows/${selected.id}/prospects`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ included, author_ids: authorIds }),
+    }).catch(() => {});
+  }
 
   // Group workflows by campaign (filtered by the sidebar search box)
   const wfMatch = (w: Workflow) => w.name.toLowerCase().includes(wfSearch.toLowerCase());
@@ -603,6 +637,9 @@ export default function WorkflowsPage() {
               <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 border-violet-500/40 text-violet-300" onClick={() => setAiOpen(true)}>
                 <Sparkles className="h-3.5 w-3.5" />AI find
               </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" disabled={prospects.length === 0} onClick={() => setSitesOpen(true)} title="See every site your prospects write on, with Domain Rating; uncheck a site to drop its prospects">
+                <Link2 className="h-3.5 w-3.5" />Check sites DR
+              </Button>
               <p className="text-xs text-muted-foreground ml-auto">
                 {includedCount} of {prospects.length} selected
               </p>
@@ -711,6 +748,39 @@ export default function WorkflowsPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Check sites DR — every unique website the prospects write on, with DR; uncheck to drop */}
+      <Dialog open={sitesOpen} onOpenChange={setSitesOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col" style={{ maxWidth: "42rem", width: "calc(100vw - 2rem)" }}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Link2 className="h-4 w-4 text-violet-400" />Sites in this workflow ({sites.length})</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">Every unique website your prospects have written on, with its Domain Rating (highest first). Uncheck a site to deselect every prospect who wrote on it, so they won&apos;t be emailed.</p>
+          <div className="overflow-y-auto divide-y divide-border border border-border rounded-lg">
+            {sites.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-6">No sites yet — add prospects first.</p>
+            ) : sites.map((s) => {
+              const checked = s.authorIds.size > 0 && [...s.authorIds].every((id) => prospects.find((p) => p.author_id === id)?.included);
+              return (
+                <div key={s.host} className="flex items-center gap-3 px-3 py-2">
+                  <Checkbox checked={checked} onCheckedChange={(v) => toggleSite([...s.authorIds], v === true)} />
+                  <a href={`https://${s.host}`} target="_blank" rel="noreferrer" className="text-sm text-violet-400 hover:underline truncate flex-1 inline-flex items-center gap-1 min-w-0">
+                    <span className="truncate">{s.host}</span><ExternalLink className="h-3 w-3 opacity-60 shrink-0" />
+                  </a>
+                  {s.dr != null
+                    ? <Badge variant="secondary" className={`text-[10px] px-1.5 py-0 h-4 tabular-nums shrink-0 ${s.dr >= 50 ? "text-green-400" : ""}`}>DR {Math.round(s.dr)}</Badge>
+                    : <span className="text-[10px] text-muted-foreground shrink-0">DR —</span>}
+                  <span className="text-[10px] text-muted-foreground shrink-0 w-24 text-right">{s.authorIds.size} prospect{s.authorIds.size === 1 ? "" : "s"}</span>
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <span className="text-xs text-muted-foreground mr-auto">{sites.filter((s) => [...s.authorIds].every((id) => prospects.find((p) => p.author_id === id)?.included)).length} of {sites.length} sites active</span>
+            <Button variant="outline" onClick={() => setSitesOpen(false)}>Done</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* AI find dialog — describe the writers you want, search the whole database */}
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
