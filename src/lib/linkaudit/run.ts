@@ -12,6 +12,7 @@ import PQueue from "p-queue";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { redis } from "@/lib/redis";
 import { qstashPublish, isServerless } from "@/lib/qstash";
+import { getIgnoredLinks } from "@/lib/linkaudit/ignore";
 
 const SITEMAP_URL = "https://www.imagine.art/sitemap.xml";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
@@ -469,6 +470,7 @@ export async function processAuditChunk(): Promise<void> {
   // Internal links that are themselves sitemap pages are alive by definition — skip
   // re-checking them (saves hundreds of fetches per run).
   const sitemapSet = new Set(state.pages.map((p) => p.replace(/\/$/, "")));
+  const ignoredSet = new Set(await getIgnoredLinks()); // team-flagged false positives — never checked/reported
   const queue = new PQueue({ concurrency: LINK_CONCURRENCY });
 
   while (state.index < state.pages.length && Date.now() < deadline) {
@@ -513,6 +515,7 @@ export async function processAuditChunk(): Promise<void> {
       const unreachables: Array<{ link: ExtractedLink; status?: number }> = [];
       await Promise.all(links.map((link) => queue.add(async () => {
         if (sitemapSet.has(link.url.replace(/\/$/, ""))) return; // known-live sitemap page
+        if (ignoredSet.has(link.url)) return; // team-ignored false positive — skip entirely
         const prior = checked[link.url];
         if (prior) {
           prior.n++;

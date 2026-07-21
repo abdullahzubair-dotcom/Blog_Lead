@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { PageHealthPanel } from "@/components/pagehealth/PageHealthPanel";
 
 interface Progress { runId: string; pagesChecked: number; pagesTotal: number; linksChecked: number; broken: number; unreachable: number; log: string[] }
 interface Run {
@@ -31,11 +32,12 @@ function fmt(iso: string | null): string {
   catch { return "—"; }
 }
 
-export default function LinkAuditPage() {
+function BrokenLinksPanel() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [ignored, setIgnored] = useState<string[]>([]);
   const [viewRunId, setViewRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -66,6 +68,7 @@ export default function LinkAuditPage() {
   useEffect(() => {
     loadStatus();
     loadFindings();
+    fetch("/api/link-audit/ignore").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setIgnored(d.ignored ?? []); }).catch(() => {});
     fetch("/api/link-audit/settings").then((r) => (r.ok ? r.json() : null)).then((d) => {
       if (!d) return;
       setHasWebhook(d.hasWebhook);
@@ -132,6 +135,20 @@ export default function LinkAuditPage() {
     setSavingSettings(false);
   }
 
+  // Ignore a link (false positive): purge its findings + add to the skip list so the crawler
+  // never checks or reports it again. Un-ignore reverses it for the next run.
+  async function ignoreLink(link: string) {
+    setFindings((fs) => fs.filter((f) => f.link_url !== link));
+    setIgnored((g) => (g.includes(link) ? g : [...g, link]));
+    await fetch("/api/link-audit/ignore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ link }) }).catch(() => {});
+    toast.success("Ignored — this link won't be checked or reported again.");
+  }
+  async function unignoreLink(link: string) {
+    setIgnored((g) => g.filter((x) => x !== link));
+    await fetch(`/api/link-audit/ignore?link=${encodeURIComponent(link)}`, { method: "DELETE" }).catch(() => {});
+    toast.info("Un-ignored — it'll be checked again next run.");
+  }
+
   // Group findings by broken link — a dead footer link is one group, not many rows.
   // Unreachable (bot-blocked/timeout) links are listed separately, never as broken.
   const broken = findings.filter((f) => f.reason !== "unreachable");
@@ -146,7 +163,7 @@ export default function LinkAuditPage() {
   }, {} as Record<string, Finding[]>));
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
@@ -154,7 +171,7 @@ export default function LinkAuditPage() {
             <Unlink className="h-5 w-5 text-violet-400" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">Link Audit</h1>
+            <h2 className="text-lg font-semibold">Broken links</h2>
             <p className="text-sm text-muted-foreground">
               Daily bot crawls every page in imagine.art&apos;s sitemap and flags links that 404 (including soft 404s). Digest goes to Slack.
             </p>
@@ -227,6 +244,13 @@ export default function LinkAuditPage() {
                   </a>
                   <Badge variant="outline" className="text-[10px] text-red-400 border-red-500/30 shrink-0">{REASON_LABEL[fs[0].reason] ?? fs[0].reason}</Badge>
                   <span className="text-[10px] text-muted-foreground shrink-0">on {fs.length} page{fs.length === 1 ? "" : "s"}</span>
+                  <button
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); ignoreLink(link); }}
+                    title="False positive? Ignore this link — never check or report it again."
+                    className="text-[10px] text-muted-foreground hover:text-amber-400 border border-border rounded px-1.5 py-0.5 shrink-0"
+                  >
+                    Ignore
+                  </button>
                 </summary>
                 <div className="px-4 pb-3 pl-11 space-y-2">
                   {/* Human explanation of where the link sits — written by AI at run finish */}
@@ -357,6 +381,46 @@ export default function LinkAuditPage() {
           Save settings
         </Button>
       </div>
+
+      {/* Ignored links — false positives the crawler skips every run */}
+      {ignored.length > 0 && (
+        <div className="border border-border rounded-xl p-4 space-y-2">
+          <p className="text-sm font-medium">Ignored links <span className="text-muted-foreground font-normal">({ignored.length} — skipped every run)</span></p>
+          <div className="border border-border rounded-lg divide-y divide-border">
+            {ignored.map((link) => (
+              <div key={link} className="flex items-center gap-2 px-3 py-1.5 text-xs">
+                <span className="truncate flex-1 text-muted-foreground">{link}</span>
+                <button onClick={() => unignoreLink(link)} className="text-[10px] text-violet-400 hover:underline shrink-0">un-ignore</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Link Audit is now the technical-SEO hub: broken-link crawl + Page Health (indexability /
+// render / Core Web Vitals). Two tabs, one nav entry, shared Slack + daily cron.
+export default function LinkAuditPage() {
+  const [tab, setTab] = useState<"links" | "health">("links");
+  return (
+    <div className="p-6 max-w-5xl mx-auto">
+      <div className="flex gap-1 border-b border-border mb-5">
+        <button
+          onClick={() => setTab("links")}
+          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === "links" ? "border-violet-500 text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          Broken Links
+        </button>
+        <button
+          onClick={() => setTab("health")}
+          className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === "health" ? "border-violet-500 text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          Page Health
+        </button>
+      </div>
+      {tab === "links" ? <BrokenLinksPanel /> : <PageHealthPanel />}
     </div>
   );
 }

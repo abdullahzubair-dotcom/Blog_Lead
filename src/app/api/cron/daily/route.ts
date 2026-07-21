@@ -29,6 +29,10 @@ export async function POST(req: NextRequest) {
   // Link audit start returns fast (work continues via after()+QStash in its own function).
   const audit = await hit("/api/link-audit/run").then((r) => r.json()).catch((e) => ({ error: e?.message }));
 
+  // Page Health nightly scan (part of the Link Audit hub) — indexability + Core Web Vitals,
+  // posts its own Slack digest via the shared link-audit webhook.
+  const pageHealth = await hit("/api/indexing/cron").then((r) => r.json()).catch((e) => ({ error: e?.message }));
+
   // Daily email finding — dig out emails for any authors still missing one (only_new keeps it
   // to authors never searched, so it doesn't re-spend credits on the same people every day).
   const finder = await fetch(`${base}/api/enrich/run?key=${encodeURIComponent(secret)}`, {
@@ -39,7 +43,7 @@ export async function POST(req: NextRequest) {
   // cron returns quickly; Vercel keeps the function alive for after() work.
   after(async () => { await hit("/api/notifications/check").catch(() => {}); });
 
-  return NextResponse.json({ ok: true, audit, finder, notifications: "triggered" });
+  return NextResponse.json({ ok: true, audit, pageHealth, finder, notifications: "triggered" });
 }
 
 export async function GET(req: NextRequest) {
