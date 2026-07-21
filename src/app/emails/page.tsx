@@ -161,6 +161,7 @@ export default function EmailsPage() {
   const [chooseSenderOpen, setChooseSenderOpen] = useState(false);
   const [chosenSender, setChosenSender] = useState<string>(""); // "" = own email
   const [aiReplies, setAiReplies] = useState(true); // let the AI negotiate replies (Handbook-driven)
+  const [toOverride, setToOverride] = useState(""); // admin test-send: route all emails here
   const [sharedSenders, setSharedSenders] = useState<{ email: string; label: string }[]>([]);
 
   useEffect(() => {
@@ -217,7 +218,7 @@ export default function EmailsPage() {
     const res = await fetch(`/api/workflows/${selectedWorkflow.id}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...(senderEmail ? { sender_email: senderEmail } : {}), ai_managed: aiReplies }),
+      body: JSON.stringify({ ...(senderEmail ? { sender_email: senderEmail } : {}), ai_managed: aiReplies, ...(toOverride.trim() ? { to_override: toOverride.trim() } : {}) }),
     });
     const data = await res.json().catch(() => ({}));
     if (data.needsAppPassword) {
@@ -1080,6 +1081,13 @@ export default function EmailsPage() {
               </button>
             ))}
           </div>
+          {/* Admin test-send: route all of this send to one address, from the chosen inbox */}
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1.5">
+            <Label className="text-sm flex items-center gap-1.5">Send to (test override) <span className="text-[10px] text-amber-500 font-normal">admin / testing</span></Label>
+            <Input type="email" placeholder="leave blank to email the real prospects" value={toOverride} onChange={(e) => setToOverride(e.target.value)} />
+            <p className="text-xs text-muted-foreground">If set, every email in this send goes to this address instead of the prospects (from the inbox chosen above), and the contacted/duplicate guards are bypassed. The AI negotiation replies stay on this address too, so you can test the whole loop end to end.</p>
+          </div>
+
           {/* AI reply handling opt-in — chosen at send time */}
           <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
             <div className="space-y-0.5">

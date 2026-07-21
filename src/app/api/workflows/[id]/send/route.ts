@@ -56,14 +56,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const includedIds = new Set(prospects.filter((p) => p.included).map((p) => p.author_id));
     const prospectByAuthor = new Map(prospects.map((p) => [p.author_id, p]));
 
-    // Never contact someone already emailed/queued in another campaign.
+    // Admin test-send: route every email to this address instead of the prospect's. In test
+    // mode we bypass the contacted-elsewhere and has-real-email guards so a test always sends.
+    const toOverride = typeof body.to_override === "string" ? body.to_override.trim() : "";
+    const testMode = !!toOverride;
+
+    // Never contact someone already emailed/queued in another campaign (skipped in test mode).
     const contactedElsewhere = await getContactedAuthorIds(id);
 
     let skippedContacted = 0;
     const sendable = emails.filter((e) => {
       if (!includedIds.has(e.author_id)) return false;
       if (e.status !== "ready" && e.status !== "scheduled") return false;
-      if (contactedElsewhere.has(e.author_id)) { skippedContacted++; return false; }
+      if (!testMode && contactedElsewhere.has(e.author_id)) { skippedContacted++; return false; }
+      if (testMode) return true; // override provides the address; no real mailto needed
       const contacts = (prospectByAuthor.get(e.author_id) as any)?.contacts ?? [];
       return contacts.some((c: any) => c.type === "mailto");
     });
@@ -82,7 +88,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const recipients: ScheduleRecipient[] = sendable.map((e) => ({ id: e.id, tz: config.timezone }));
 
     const slots = computeSmartSchedule(recipients, config, new Date());
-    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail, sentByEmail, body.ai_managed === true);
+    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail, sentByEmail, body.ai_managed === true, toOverride || undefined);
 
     return NextResponse.json({
       scheduled: slots.length,

@@ -1468,7 +1468,9 @@ export async function getOutreachEmailWithRecipient(id: string): Promise<(Outrea
     .maybeSingle();
   if (!data) return null;
   const mailto = ((data as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
-  return { ...(data as any), recipient: mailto ? (mailto.value as string).replace(/^mailto:/, "") : undefined };
+  const ovr = (data as any).recipient_override;
+  const recipient = (ovr && ovr.trim()) || (mailto ? (mailto.value as string).replace(/^mailto:/, "") : undefined);
+  return { ...(data as any), recipient };
 }
 
 export async function getOutreachEmail(id: string): Promise<OutreachEmail | null> {
@@ -2152,12 +2154,15 @@ export async function scheduleWorkflowEmails(
   senderEmail?: string,
   sentByEmail?: string, // who actually clicked Send — tracked separately when sending as a shared inbox
   aiManaged?: boolean,  // mark these threads for AI reply handling (chosen at send time)
+  toOverride?: string,  // admin test-send: route every email to this address instead of the prospect's
 ): Promise<void> {
+  const ovr = toOverride?.trim() || null;
   for (let i = 0; i < emailIdsInOrder.length && i < times.length; i++) {
     const patch: Record<string, unknown> = { scheduled_at: times[i], status: "scheduled", error: null };
     if (senderEmail) patch.sender_email = senderEmail; // whose mailbox this sends from
     if (sentByEmail) patch.sent_by_email = sentByEmail;
     if (aiManaged) patch.ai_managed = true;
+    if (ovr) patch.recipient_override = ovr; // test target
     await supabaseAdmin.from("outreach_emails").update(patch).eq("id", emailIdsInOrder[i]);
   }
 }
@@ -2415,7 +2420,9 @@ export async function getDueEmails(limit = 25): Promise<Array<OutreachEmail & { 
 
   return (data ?? []).map((e: any) => {
     const mailto = (e.author?.contacts ?? []).find((c: any) => c.type === "mailto");
-    return { ...e, recipient: mailto ? mailto.value.replace(/^mailto:/, "") : undefined };
+    // recipient_override (admin test-send) wins over the prospect's real address.
+    const recipient = (e.recipient_override && e.recipient_override.trim()) || (mailto ? mailto.value.replace(/^mailto:/, "") : undefined);
+    return { ...e, recipient };
   });
 }
 

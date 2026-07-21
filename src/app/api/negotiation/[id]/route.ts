@@ -29,7 +29,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   try {
     const { action, body: editedBody } = await req.json().catch(() => ({}));
     const { data: draft } = await supabaseAdmin.from("outreach_emails")
-      .select("id, body, subject, sender_email, sent_by_email, author_id")
+      .select("id, body, subject, sender_email, sent_by_email, author_id, recipient_override")
       .eq("parent_id", id).eq("kind", "negotiation").in("status", ["draft", "failed"])
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (!draft) return NextResponse.json({ error: "No draft to act on" }, { status: 404 });
@@ -42,7 +42,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     const bodyToSend = typeof editedBody === "string" && editedBody.trim() ? editedBody.trim() : (draft as any).body;
     const { data: mc } = await supabaseAdmin.from("contacts").select("value").eq("author_id", (draft as any).author_id).eq("type", "mailto").limit(1).maybeSingle();
-    const recipient = ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
+    const recipient = ((draft as any).recipient_override && (draft as any).recipient_override.trim())
+      || ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
     if (!recipient) return NextResponse.json({ error: "No recipient email on file for this author" }, { status: 400 });
     const { data: parent } = await supabaseAdmin.from("outreach_emails").select("message_id").eq("id", id).maybeSingle();
     const parentMsgId = (parent as any)?.message_id ?? undefined;

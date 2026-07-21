@@ -29,7 +29,7 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
 
   const { data: threadRows } = await supabaseAdmin
     .from("outreach_emails")
-    .select("id, kind, body, subject, created_at, reply_excerpt, reply_subject, replied_at, parent_id, sender_email, sent_by_email, workflow_id, author_id, message_id")
+    .select("id, kind, body, subject, created_at, reply_excerpt, reply_subject, replied_at, parent_id, sender_email, sent_by_email, workflow_id, author_id, message_id, recipient_override")
     .or(`id.eq.${initialId},parent_id.eq.${initialId}`)
     .order("created_at", { ascending: true });
   const rows = (threadRows ?? []) as any[];
@@ -60,7 +60,9 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
   const autonomy = settings.ai_autonomy && !opts?.forceDraft && cls.intent !== "hard_no" && cls.intent !== "unsubscribe";
 
   const { data: mc } = await supabaseAdmin.from("contacts").select("value").eq("author_id", initial.author_id).eq("type", "mailto").limit(1).maybeSingle();
-  const recipient = ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
+  // Test-send override on the initial keeps the whole AI thread on the test address.
+  const recipient = ((initial as any).recipient_override && (initial as any).recipient_override.trim())
+    || ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
   const parentMsgId = (initial as any).message_id ?? undefined;
 
   // Clear any previous UNSENT draft so we never pile up stale drafts.
@@ -80,6 +82,7 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
     message_id: sent?.messageId ?? null,
     error: status === "failed" ? (sent?.error ?? "send failed") : null,
     sender_email: initial.sender_email, sent_by_email: initial.sent_by_email,
+    recipient_override: (initial as any).recipient_override ?? null,
     ai_managed: true, max_offer: ceiling, negotiation_status: draft.statusHint,
   }).select("id").single();
 
