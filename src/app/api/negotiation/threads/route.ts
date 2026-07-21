@@ -18,14 +18,15 @@ export async function GET() {
 
     const rows = (data ?? []).filter((r: any) => r.replied_at || r.bounced_at || r.ai_managed || r.negotiation_status);
 
-    // Which threads already have a negotiation reply drafted / sent?
+    // The latest negotiation reply per thread (to read/send/regenerate on the page).
     const ids = rows.map((r: any) => r.id);
-    const draftByParent = new Map<string, string>();
+    const draftByParent = new Map<string, { status: string; body: string; id: string }>();
     for (let i = 0; i < ids.length; i += 300) {
       const { data: kids } = await supabaseAdmin
-        .from("outreach_emails").select("parent_id, status")
-        .eq("kind", "negotiation").in("parent_id", ids.slice(i, i + 300));
-      for (const k of kids ?? []) if (!draftByParent.has((k as any).parent_id)) draftByParent.set((k as any).parent_id, (k as any).status);
+        .from("outreach_emails").select("id, parent_id, status, body, created_at")
+        .eq("kind", "negotiation").in("parent_id", ids.slice(i, i + 300))
+        .order("created_at", { ascending: false });
+      for (const k of kids ?? []) if (!draftByParent.has((k as any).parent_id)) draftByParent.set((k as any).parent_id, { status: (k as any).status, body: (k as any).body, id: (k as any).id });
     }
 
     const threads = rows.map((r: any) => {
@@ -44,7 +45,9 @@ export async function GET() {
         ceiling, category, replyKind: r.reply_kind, sentiment: r.reply_sentiment,
         repliedAt: r.replied_at, bouncedAt: r.bounced_at, negotiationStatus: r.negotiation_status,
         aiManaged: r.ai_managed, subject: r.subject, replyExcerpt: r.reply_excerpt,
-        sender: r.sender_email, draftStatus: draftByParent.get(r.id) ?? null,
+        sender: r.sender_email,
+        draftStatus: draftByParent.get(r.id)?.status ?? null,
+        draftBody: draftByParent.get(r.id)?.body ?? null,
       };
     });
 

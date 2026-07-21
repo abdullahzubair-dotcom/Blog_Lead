@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -159,6 +160,7 @@ export default function EmailsPage() {
   // "Choose sender" popup — own email vs. a shared inbox (e.g. Zain's) — shown on every Send All
   const [chooseSenderOpen, setChooseSenderOpen] = useState(false);
   const [chosenSender, setChosenSender] = useState<string>(""); // "" = own email
+  const [aiReplies, setAiReplies] = useState(true); // let the AI negotiate replies (Handbook-driven)
   const [sharedSenders, setSharedSenders] = useState<{ email: string; label: string }[]>([]);
 
   useEffect(() => {
@@ -215,7 +217,7 @@ export default function EmailsPage() {
     const res = await fetch(`/api/workflows/${selectedWorkflow.id}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(senderEmail ? { sender_email: senderEmail } : {}),
+      body: JSON.stringify({ ...(senderEmail ? { sender_email: senderEmail } : {}), ai_managed: aiReplies }),
     });
     const data = await res.json().catch(() => ({}));
     if (data.needsAppPassword) {
@@ -1077,6 +1079,14 @@ export default function EmailsPage() {
                 <span className="block text-xs text-muted-foreground">{s.email} · will show as sent by you in the Sending page</span>
               </button>
             ))}
+          </div>
+          {/* AI reply handling opt-in — chosen at send time */}
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
+            <div className="space-y-0.5">
+              <Label className="text-sm flex items-center gap-1.5"><Sparkles className="h-3.5 w-3.5 text-violet-400" />Let AI handle replies</Label>
+              <p className="text-xs text-muted-foreground max-w-xs">Replies to these emails go to the Negotiation page and the AI negotiates them using your Handbook (pricing tiers, lowball strategy). {aiReplies ? "Autonomy is set in the Handbook." : "You can enable this later per thread."}</p>
+            </div>
+            <Switch checked={aiReplies} onCheckedChange={setAiReplies} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setChooseSenderOpen(false)}>Cancel</Button>

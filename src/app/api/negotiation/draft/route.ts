@@ -4,6 +4,7 @@ import { getNegotiationSettings } from "@/lib/negotiation/settings";
 import { maxOfferFor } from "@/lib/negotiation/pricing";
 import { classifyReplyIntent, draftNegotiationReply, type ThreadMessage } from "@/lib/negotiation/agent";
 import { updateOutreachEmail } from "@/lib/db/queries";
+import { deliverOutreach } from "@/lib/email/deliver";
 
 export const maxDuration = 60;
 
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
 
     const { data: threadRows } = await supabaseAdmin
       .from("outreach_emails")
-      .select("id, kind, body, subject, created_at, reply_excerpt, reply_subject, replied_at, parent_id, sender_email, sent_by_email, workflow_id, author_id")
+      .select("id, kind, body, subject, created_at, reply_excerpt, reply_subject, replied_at, parent_id, sender_email, sent_by_email, workflow_id, author_id, message_id")
       .or(`id.eq.${initialId},parent_id.eq.${initialId}`)
       .order("created_at", { ascending: true });
     const rows = (threadRows ?? []) as any[];
@@ -57,12 +58,30 @@ export async function POST(req: NextRequest) {
 
     const subject = /^re:/i.test(initial.subject ?? "") ? initial.subject : `Re: ${initial.subject ?? "(no subject)"}`;
     const autonomy = settings.ai_autonomy && send !== false && cls.intent !== "hard_no" && cls.intent !== "unsubscribe";
-    const status = autonomy ? "scheduled" : "draft";
-    const scheduled_at = autonomy ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
+
+    // Recipient (the author's mailto) + parent Message-ID for threading.
+    const { data: mc } = await supabaseAdmin.from("contacts").select("value").eq("author_id", initial.author_id).eq("type", "mailto").limit(1).maybeSingle();
+    const recipient = ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
+    const parentMsgId = (initial as any).message_id ?? undefined;
+
+    // Clear any previous UNSENT draft for this thread so we never pile up stale drafts.
+    await supabaseAdmin.from("outreach_emails").delete().eq("parent_id", initialId).eq("kind", "negotiation").eq("status", "draft");
+
+    // Autonomy ON => send right now (no waiting on a cron). Otherwise save a draft to approve.
+    let status = "draft";
+    let sent: any = null;
+    if (autonomy && recipient) {
+      sent = await deliverOutreach({ to: recipient, subject, body: draft.body, sender: initial.sender_email, sentBy: initial.sent_by_email, inReplyTo: parentMsgId, references: parentMsgId }).catch((e: any) => ({ ok: false, error: e?.message }));
+      status = sent?.ok ? "sent" : "failed";
+    }
 
     const { data: row, error } = await supabaseAdmin.from("outreach_emails").insert({
       workflow_id: initial.workflow_id, author_id: initial.author_id, parent_id: initialId,
-      kind: "negotiation", subject, body: draft.body, status, scheduled_at,
+      kind: "negotiation", subject, body: draft.body,
+      status,
+      sent_at: status === "sent" ? new Date().toISOString() : null,
+      message_id: sent?.messageId ?? null,
+      error: status === "failed" ? (sent?.error ?? "send failed") : null,
       sender_email: initial.sender_email, sent_by_email: initial.sent_by_email,
       ai_managed: true, max_offer: ceiling, negotiation_status: draft.statusHint,
     }).select("id").single();
@@ -79,7 +98,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true, draftId: row.id, body: draft.body, classification: cls,
       ceiling, suggestedOffer: draft.suggestedOffer, statusHint: draft.statusHint,
-      autonomy, persistedAs: status,
+      autonomy, persistedAs: status, sent: status === "sent",
+      sendError: status === "failed" ? (sent?.error ?? "send failed") : null,
+      recipientMissing: autonomy && !recipient,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "draft failed" }, { status: 500 });

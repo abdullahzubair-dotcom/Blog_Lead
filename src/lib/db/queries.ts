@@ -2144,11 +2144,13 @@ export async function scheduleWorkflowEmails(
   times: string[],
   senderEmail?: string,
   sentByEmail?: string, // who actually clicked Send — tracked separately when sending as a shared inbox
+  aiManaged?: boolean,  // mark these threads for AI reply handling (chosen at send time)
 ): Promise<void> {
   for (let i = 0; i < emailIdsInOrder.length && i < times.length; i++) {
     const patch: Record<string, unknown> = { scheduled_at: times[i], status: "scheduled", error: null };
     if (senderEmail) patch.sender_email = senderEmail; // whose mailbox this sends from
     if (sentByEmail) patch.sent_by_email = sentByEmail;
+    if (aiManaged) patch.ai_managed = true;
     await supabaseAdmin.from("outreach_emails").update(patch).eq("id", emailIdsInOrder[i]);
   }
 }

@@ -82,7 +82,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const recipients: ScheduleRecipient[] = sendable.map((e) => ({ id: e.id, tz: config.timezone }));
 
     const slots = computeSmartSchedule(recipients, config, new Date());
-    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail, sentByEmail);
+    await scheduleWorkflowEmails(id, slots.map((s) => s.id), slots.map((s) => s.at), senderEmail, sentByEmail, body.ai_managed === true);
 
     return NextResponse.json({
       scheduled: slots.length,
