@@ -1926,13 +1926,16 @@ export async function isAuthorContacted(authorId: string): Promise<{ contacted: 
   // any of them has outreach history. (recipient = the author's mailto contact, so we match on
   // the address, not a non-existent recipient column.)
   if (!hasHistory) {
-    const addrs = [...new Set((myContacts ?? [])
-      .map((c: any) => (c.value ?? "").trim().toLowerCase())
-      .filter((v: string) => v.includes("@")))];
-    if (addrs.length > 0) {
-      const { data: sharers } = await supabaseAdmin
-        .from("contacts").select("author_id").eq("type", "mailto").in("value", addrs as string[]);
-      const sharerIds = [...new Set((sharers ?? []).map((s: any) => s.author_id).filter((x: string) => x !== authorId))];
+    const myAddrs = new Set((myContacts ?? [])
+      .map((c: any) => (c.value ?? "").replace(/^mailto:/i, "").trim().toLowerCase())
+      .filter((v: string) => v.includes("@")));
+    if (myAddrs.size > 0) {
+      // Normalize BOTH sides (strip mailto:, lowercase) and match in memory, so this agrees
+      // with getContactedAuthorIds even if an address was ever stored mixed-case or unprefixed.
+      const all = await fetchAllRows<{ author_id: string; value: string }>("contacts", "author_id, value", (q) => q.eq("type", "mailto"));
+      const sharerIds = [...new Set(all
+        .filter((c) => { const a = (c.value ?? "").replace(/^mailto:/i, "").trim().toLowerCase(); return !!a && myAddrs.has(a) && c.author_id !== authorId; })
+        .map((c) => c.author_id))];
       if (sharerIds.length > 0) {
         const { data } = await supabaseAdmin
           .from("outreach_emails").select("id").in("author_id", sharerIds).in("status", ["sent", "scheduled"]).limit(1);
