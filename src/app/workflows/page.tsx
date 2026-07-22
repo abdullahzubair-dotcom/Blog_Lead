@@ -108,14 +108,6 @@ function FilterPanel({ filters, onChange, stats }: { filters: WorkflowFilters; o
         </div>
         <div className="col-span-2 flex items-center gap-2">
           <Checkbox
-            id="has-contact"
-            checked={!!filters.hasContact}
-            onCheckedChange={(v) => onChange({ ...filters, hasContact: v === true || undefined })}
-          />
-          <Label htmlFor="has-contact" className="text-xs cursor-pointer">Has email address</Label>
-        </div>
-        <div className="col-span-2 flex items-center gap-2">
-          <Checkbox
             id="not-contacted"
             checked={!!filters.notContacted}
             onCheckedChange={(v) => onChange({ ...filters, notContacted: v === true || undefined })}
