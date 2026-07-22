@@ -162,17 +162,19 @@ export default function EmailsPage() {
   const [chosenSender, setChosenSender] = useState<string>(""); // "" = own email
   const [aiReplies, setAiReplies] = useState(true); // let the AI negotiate replies (Handbook-driven)
   const [toOverride, setToOverride] = useState(""); // admin test-send: route all emails here
-  const [sharedSenders, setSharedSenders] = useState<{ email: string; label: string }[]>([]);
+  // Every team mailbox with a connected app password (admins only; empty for non-admins). Lets an
+  // admin send AS any teammate — from their Gmail, attributed to them.
+  const [inboxAccounts, setInboxAccounts] = useState<{ email: string; label: string }[]>([]);
 
   useEffect(() => {
     Promise.all([
       fetch("/api/workflows").then((r) => r.json()),
       fetch("/api/email-templates").then((r) => r.json()),
-      fetch("/api/shared-senders").then((r) => (r.ok ? r.json() : [])),
-    ]).then(([wfs, tmpls, shared]) => {
+      fetch("/api/inbox-accounts").then((r) => (r.ok ? r.json() : [])),
+    ]).then(([wfs, tmpls, accounts]) => {
       setWorkflows(wfs ?? []);
       setTemplates(tmpls ?? []);
-      setSharedSenders(shared ?? []);
+      setInboxAccounts(accounts ?? []);
     });
   }, []);
 
@@ -222,8 +224,8 @@ export default function EmailsPage() {
     });
     const data = await res.json().catch(() => ({}));
     if (data.needsAppPassword) {
-      const shared = sharedSenders.find((s) => s.email === data.sender);
-      setNeedAppPw({ sender: data.sender ?? senderEmail, label: shared?.label ?? "your" }); // must add an app password for the chosen identity first
+      const acct = inboxAccounts.find((s) => s.email === data.sender);
+      setNeedAppPw({ sender: data.sender ?? senderEmail, label: acct?.label ?? "your" }); // must add an app password for the chosen identity first
     } else if (res.ok && data.scheduled > 0) {
       const skipped = data.skippedContacted ? ` (${data.skippedContacted} skipped — already contacted elsewhere)` : "";
       const via = data.sentBy && data.sender && data.sentBy !== data.sender ? ` (sent by ${data.sentBy})` : "";
@@ -1069,15 +1071,15 @@ export default function EmailsPage() {
               <span className="font-medium">Your own email</span>
               <span className="block text-xs text-muted-foreground">{myEmail || "your Gmail"}</span>
             </button>
-            {sharedSenders.map((s) => (
+            {inboxAccounts.filter((s) => s.email.toLowerCase() !== myEmail.toLowerCase()).map((s) => (
               <button
                 key={s.email}
                 type="button"
                 onClick={() => setChosenSender(s.email)}
                 className={`w-full text-left rounded-lg border px-3 py-2.5 text-sm transition-colors ${chosenSender === s.email ? "border-violet-500 bg-violet-500/10" : "border-border hover:bg-muted/40"}`}
               >
-                <span className="font-medium">{s.label}&apos;s email</span>
-                <span className="block text-xs text-muted-foreground">{s.email} · will show as sent by you in the Sending page</span>
+                <span className="font-medium">{s.label}</span>
+                <span className="block text-xs text-muted-foreground">{s.email} · sends from their Gmail, as them</span>
               </button>
             ))}
           </div>

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@auth";
-import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds, getEnabledSharedSenders } from "@/lib/db/queries";
+import { getWorkflowEmails, getWorkflowProspects, getUserEmailConfig, scheduleWorkflowEmails, getContactedAuthorIds, getInboxAccounts } from "@/lib/db/queries";
 import { computeSmartSchedule, type ScheduleRecipient } from "@/lib/email/schedule";
+import { isAdminEmail } from "@/lib/auth/admin";
 import type { EmailSendConfig } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -16,18 +17,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   try {
     const session = await auth().catch(() => null);
-    const sentByEmail = (session?.user?.email as string | undefined) ?? "";
-    if (!sentByEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
+    const authEmail = (session?.user?.email as string | undefined) ?? "";
+    if (!authEmail) return NextResponse.json({ error: "not signed in" }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
-    let senderEmail = sentByEmail;
-    let shared: { email: string; label: string } | undefined;
-    if (typeof body.sender_email === "string" && body.sender_email && body.sender_email !== sentByEmail) {
-      shared = (await getEnabledSharedSenders()).find((s) => s.email === body.sender_email);
-      if (!shared) {
-        return NextResponse.json({ error: "That shared inbox isn't available right now — it may have been turned off in Admin." }, { status: 400 });
+    // Send from your own Gmail by default. If a different team account is chosen, ACT AS them:
+    // send from their Gmail AND attribute it to them (sent_by = them), exactly as if they had
+    // signed in and pressed Send. Only accounts with a connected app password are selectable.
+    let senderEmail = authEmail;
+    let sentByEmail = authEmail;
+    let actingAs = false;
+    if (typeof body.sender_email === "string" && body.sender_email && body.sender_email.toLowerCase() !== authEmail.toLowerCase()) {
+      if (!isAdminEmail(authEmail)) {
+        return NextResponse.json({ error: "Only an admin can send as another user." }, { status: 403 });
       }
-      senderEmail = shared.email;
+      const acct = (await getInboxAccounts()).find((a) => a.email.toLowerCase() === body.sender_email.toLowerCase());
+      if (!acct) {
+        return NextResponse.json({ error: "That account can't be sent from — it has no connected Gmail app password." }, { status: 400 });
+      }
+      senderEmail = acct.email;
+      sentByEmail = acct.email; // full act-as: their Gmail, attributed to them
+      actingAs = true;
     }
 
     const userCfg = await getUserEmailConfig(senderEmail);
@@ -35,8 +45,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({
         needsAppPassword: true,
         sender: senderEmail,
-        reason: shared
-          ? `${shared.label}'s Gmail app password isn't set up yet.`
+        reason: actingAs
+          ? `${senderEmail}'s Gmail app password isn't set up yet.`
           : "Add your Gmail app password in Settings so emails send from your own address.",
       });
     }
