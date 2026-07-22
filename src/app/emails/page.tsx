@@ -1062,26 +1062,20 @@ export default function EmailsPage() {
           <DialogHeader>
             <DialogTitle>Send from</DialogTitle>
           </DialogHeader>
-          <div className="space-y-2 py-1">
-            <button
-              type="button"
-              onClick={() => setChosenSender("")}
-              className={`w-full text-left rounded-lg border px-3 py-2.5 text-sm transition-colors ${chosenSender === "" ? "border-violet-500 bg-violet-500/10" : "border-border hover:bg-muted/40"}`}
+          <div className="space-y-1.5 py-1">
+            <select
+              value={chosenSender}
+              onChange={(e) => setChosenSender(e.target.value)}
+              className="w-full h-10 rounded-md border border-input bg-background px-2.5 text-sm"
             >
-              <span className="font-medium">Your own email</span>
-              <span className="block text-xs text-muted-foreground">{myEmail || "your Gmail"}</span>
-            </button>
-            {inboxAccounts.filter((s) => s.email.toLowerCase() !== myEmail.toLowerCase()).map((s) => (
-              <button
-                key={s.email}
-                type="button"
-                onClick={() => setChosenSender(s.email)}
-                className={`w-full text-left rounded-lg border px-3 py-2.5 text-sm transition-colors ${chosenSender === s.email ? "border-violet-500 bg-violet-500/10" : "border-border hover:bg-muted/40"}`}
-              >
-                <span className="font-medium">{s.label}</span>
-                <span className="block text-xs text-muted-foreground">{s.email} · sends from their Gmail, as them</span>
-              </button>
-            ))}
+              <option value="">Your own email ({myEmail || "your Gmail"})</option>
+              {inboxAccounts.filter((s) => s.email.toLowerCase() !== myEmail.toLowerCase()).map((s) => (
+                <option key={s.email} value={s.email}>{s.label} — {s.email}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {chosenSender ? `Sends from ${chosenSender}'s Gmail, attributed to them (as if they pressed Send).` : "Sends from your own Gmail."}
+            </p>
           </div>
           {/* Admin test-send: route all of this send to one address, from the chosen inbox */}
           <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1.5">
