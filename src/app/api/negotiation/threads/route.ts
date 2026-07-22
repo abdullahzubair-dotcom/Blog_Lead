@@ -49,7 +49,7 @@ export async function GET() {
         id: r.id, authorId: r.author_id, name: r.author?.full_name ?? "Unknown",
         publication: dom?.name ?? dom?.host ?? "", host: dom?.host ?? "", dr: dom?.dr ?? null,
         ceiling, category, replyKind: r.reply_kind, sentiment: r.reply_sentiment,
-        repliedAt: r.replied_at, bouncedAt: r.bounced_at, negotiationStatus: r.negotiation_status,
+        repliedAt: r.replied_at, bouncedAt: r.bounced_at, sentAt: r.sent_at, negotiationStatus: r.negotiation_status,
         aiManaged: r.ai_managed, subject: r.subject, replyExcerpt: r.reply_excerpt,
         sender: r.sender_email,
         draftStatus: draftByParent.get(r.id)?.status ?? null,

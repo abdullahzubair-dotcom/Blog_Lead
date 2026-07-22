@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play } from "lucide-react";
+import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play, Mail } from "lucide-react";
 import { toast } from "sonner";
 
 interface Thread {
@@ -20,8 +20,14 @@ interface Thread {
   replyKind: string | null; sentiment: string | null; negotiationStatus: string | null;
   aiManaged: boolean; subject: string; replyExcerpt: string | null;
   draftStatus: string | null; draftBody: string | null;
+  repliedAt: string | null; sentAt: string | null; bouncedAt: string | null; sender: string | null;
 }
 interface Msg { from: "us" | "them"; body: string; at: string | null }
+
+function fmtDate(iso?: string | null): string {
+  if (!iso) return "";
+  try { return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; }
+}
 
 const CATS = [
   { key: "queued", label: "Queued" },
@@ -50,6 +56,7 @@ export default function NegotiationPage() {
   const [priceForm, setPriceForm] = useState({ max_offer: "", criteria: "" });
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [collapsedSenders, setCollapsedSenders] = useState<Set<string>>(new Set());
   const [convo, setConvo] = useState<Record<string, Msg[]>>({});
   const [editBody, setEditBody] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState(false);
@@ -63,6 +70,23 @@ export default function NegotiationPage() {
   useEffect(() => { load(); }, [load]);
 
   const rows = threads.filter((t) => t.category === tab);
+  const dateOf = (t: Thread) => t.repliedAt ?? t.bouncedAt ?? t.sentAt ?? null;
+  // Group the current tab's threads by the account they were sent from (mirrors the Sending page),
+  // newest activity first within each account and across accounts.
+  const senderGroups = (() => {
+    const m = new Map<string, { key: string; label: string; items: Thread[] }>();
+    for (const t of rows) {
+      const key = t.sender || "__default__";
+      const label = t.sender || "Default account";
+      if (!m.has(key)) m.set(key, { key, label, items: [] });
+      m.get(key)!.items.push(t);
+    }
+    const groups = [...m.values()];
+    for (const g of groups) g.items.sort((a, b) => (dateOf(b) ?? "").localeCompare(dateOf(a) ?? ""));
+    groups.sort((a, b) => (dateOf(b.items[0]) ?? "").localeCompare(dateOf(a.items[0]) ?? ""));
+    return groups;
+  })();
+  const toggleSender = (key: string) => setCollapsedSenders((p) => { const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const countFor = (k: string) => threads.filter((t) => t.category === k).length;
   const toggle = (id: string) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const selectAllVisible = () => setSel(new Set(rows.map((r) => r.id)));
@@ -138,6 +162,66 @@ export default function NegotiationPage() {
     } catch (e: any) { toast.error(e?.message ?? "failed"); } finally { setBusy(null); }
   };
 
+  const renderThread = (t: Thread) => (
+    <div key={t.id}>
+      <div className="flex items-start gap-3 p-3">
+        <Checkbox checked={sel.has(t.id)} onCheckedChange={() => toggle(t.id)} className="mt-1" />
+        <button onClick={() => expand(t)} className="text-muted-foreground hover:text-foreground mt-0.5 shrink-0">
+          {open === t.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+        <div className="flex-1 min-w-0 space-y-1 cursor-pointer" onClick={() => expand(t)}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm">{t.name}</span>
+            <span className="text-xs text-muted-foreground">{t.publication}</span>
+            {t.dr != null && <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">DR {Math.round(t.dr)}</Badge>}
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">{t.ceiling != null ? `≤ ${currency} ${t.ceiling}` : "placement-only"}</Badge>
+            {t.aiManaged && <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-violet-400 border-violet-500/40 bg-violet-500/10"><Bot className="h-2.5 w-2.5 mr-0.5" />AI</Badge>}
+            {t.sentiment && <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-4 ${SENTIMENT[t.sentiment] ?? ""}`}>{t.sentiment}</Badge>}
+            {t.draftStatus && <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">{t.draftStatus === "sent" ? "AI replied" : t.draftStatus === "failed" ? "send failed" : "AI draft ready"}</Badge>}
+            {dateOf(t) && <span className="text-[11px] text-muted-foreground ml-auto whitespace-nowrap">{fmtDate(dateOf(t))}</span>}
+          </div>
+          {t.replyExcerpt && <p className="text-xs text-muted-foreground line-clamp-2 break-words">&ldquo;{t.replyExcerpt.slice(0, 240)}&rdquo;</p>}
+        </div>
+        {(t.category === "needs_reply" || t.category === "negotiating") && (
+          <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)} className="shrink-0">
+            {busy === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Sparkles className="h-4 w-4 mr-1.5" />{t.draftBody ? "Regenerate" : autonomy ? "AI reply" : "Draft AI reply"}</>}
+          </Button>
+        )}
+        {t.category === "queued" && (
+          <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+            {t.status === "sent" ? "Sent · awaiting reply" : t.status === "scheduled" ? "Queued to send" : (t.status ?? "queued")}
+          </span>
+        )}
+      </div>
+
+      {open === t.id && (
+        <div className="px-4 pb-4 pl-11 space-y-3 bg-muted/20">
+          <div className="pt-2">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Conversation</p>
+            {(convo[t.id] ?? []).length === 0 ? <p className="text-xs text-muted-foreground">Loading…</p> : (convo[t.id] ?? []).map((m, i) => (
+              <div key={i} className={`text-xs rounded-lg p-2 mb-1.5 max-w-[85%] whitespace-pre-wrap break-words ${m.from === "us" ? "bg-violet-500/10 ml-auto" : "bg-muted"}`}>
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{m.from === "us" ? "Us" : t.name}</div>{m.body}
+              </div>
+            ))}
+          </div>
+          {editBody[t.id] !== undefined ? (
+            <div className="space-y-2">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI draft reply (edit before sending)</p>
+              <Textarea rows={7} value={editBody[t.id]} onChange={(e) => setEditBody((s) => ({ ...s, [t.id]: e.target.value }))} className="text-sm" />
+              <div className="flex gap-2">
+                <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" disabled={busy === t.id} onClick={() => sendOrDiscard(t, "send")}><Send className="h-4 w-4 mr-1" />Send reply</Button>
+                <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)}><RefreshCw className="h-4 w-4 mr-1" />Regenerate</Button>
+                <Button size="sm" variant="ghost" disabled={busy === t.id} onClick={() => sendOrDiscard(t, "discard")}><Trash2 className="h-4 w-4 mr-1" />Discard</Button>
+              </div>
+            </div>
+          ) : (t.category === "needs_reply" || t.category === "negotiating") ? (
+            <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)}><Sparkles className="h-4 w-4 mr-1.5" />Draft AI reply</Button>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -186,66 +270,31 @@ export default function NegotiationPage() {
       ) : rows.length === 0 ? (
         <p className="text-center text-muted-foreground py-10 text-sm">Nothing in this bucket.</p>
       ) : (
-        <Card><CardContent className="p-0 divide-y divide-border">
-          {rows.map((t) => (
-            <div key={t.id}>
-              <div className="flex items-start gap-3 p-3">
-                <Checkbox checked={sel.has(t.id)} onCheckedChange={() => toggle(t.id)} className="mt-1" />
-                <button onClick={() => expand(t)} className="text-muted-foreground hover:text-foreground mt-0.5 shrink-0">
-                  {open === t.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        <div className="space-y-3">
+          {senderGroups.map((g) => {
+            const collapsed = collapsedSenders.has(`${tab}:${g.key}`);
+            const last = dateOf(g.items[0]);
+            return (
+              <Card key={g.key}>
+                <button
+                  onClick={() => toggleSender(`${tab}:${g.key}`)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                >
+                  {collapsed ? <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
+                  <Mail className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium truncate">{g.label}</span>
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">{g.items.length}</Badge>
+                  {last && <span className="text-[11px] text-muted-foreground ml-auto whitespace-nowrap">{fmtDate(last)}</span>}
                 </button>
-                <div className="flex-1 min-w-0 space-y-1 cursor-pointer" onClick={() => expand(t)}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-sm">{t.name}</span>
-                    <span className="text-xs text-muted-foreground">{t.publication}</span>
-                    {t.dr != null && <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4">DR {Math.round(t.dr)}</Badge>}
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">{t.ceiling != null ? `≤ ${currency} ${t.ceiling}` : "placement-only"}</Badge>
-                    {t.aiManaged && <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-violet-400 border-violet-500/40 bg-violet-500/10"><Bot className="h-2.5 w-2.5 mr-0.5" />AI</Badge>}
-                    {t.sentiment && <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-4 ${SENTIMENT[t.sentiment] ?? ""}`}>{t.sentiment}</Badge>}
-                    {t.draftStatus && <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4">{t.draftStatus === "sent" ? "AI replied" : t.draftStatus === "failed" ? "send failed" : "AI draft ready"}</Badge>}
-                  </div>
-                  {t.replyExcerpt && <p className="text-xs text-muted-foreground line-clamp-2 break-words">&ldquo;{t.replyExcerpt.slice(0, 240)}&rdquo;</p>}
-                </div>
-                {(t.category === "needs_reply" || t.category === "negotiating") && (
-                  <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)} className="shrink-0">
-                    {busy === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Sparkles className="h-4 w-4 mr-1.5" />{t.draftBody ? "Regenerate" : autonomy ? "AI reply" : "Draft AI reply"}</>}
-                  </Button>
+                {!collapsed && (
+                  <CardContent className="p-0 divide-y divide-border border-t">
+                    {g.items.map((t) => renderThread(t))}
+                  </CardContent>
                 )}
-                {t.category === "queued" && (
-                  <span className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
-                    {t.status === "sent" ? "Sent · awaiting reply" : t.status === "scheduled" ? "Queued to send" : (t.status ?? "queued")}
-                  </span>
-                )}
-              </div>
-
-              {open === t.id && (
-                <div className="px-4 pb-4 pl-11 space-y-3 bg-muted/20">
-                  <div className="pt-2">
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Conversation</p>
-                    {(convo[t.id] ?? []).length === 0 ? <p className="text-xs text-muted-foreground">Loading…</p> : (convo[t.id] ?? []).map((m, i) => (
-                      <div key={i} className={`text-xs rounded-lg p-2 mb-1.5 max-w-[85%] whitespace-pre-wrap break-words ${m.from === "us" ? "bg-violet-500/10 ml-auto" : "bg-muted"}`}>
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{m.from === "us" ? "Us" : t.name}</div>{m.body}
-                      </div>
-                    ))}
-                  </div>
-                  {editBody[t.id] !== undefined ? (
-                    <div className="space-y-2">
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI draft reply (edit before sending)</p>
-                      <Textarea rows={7} value={editBody[t.id]} onChange={(e) => setEditBody((s) => ({ ...s, [t.id]: e.target.value }))} className="text-sm" />
-                      <div className="flex gap-2">
-                        <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" disabled={busy === t.id} onClick={() => sendOrDiscard(t, "send")}><Send className="h-4 w-4 mr-1" />Send reply</Button>
-                        <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)}><RefreshCw className="h-4 w-4 mr-1" />Regenerate</Button>
-                        <Button size="sm" variant="ghost" disabled={busy === t.id} onClick={() => sendOrDiscard(t, "discard")}><Trash2 className="h-4 w-4 mr-1" />Discard</Button>
-                      </div>
-                    </div>
-                  ) : (t.category === "needs_reply" || t.category === "negotiating") ? (
-                    <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)}><Sparkles className="h-4 w-4 mr-1.5" />Draft AI reply</Button>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          ))}
-        </CardContent></Card>
+              </Card>
+            );
+          })}
+        </div>
       )}
 
       <Dialog open={priceOpen} onOpenChange={setPriceOpen}>
