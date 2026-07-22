@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent } from "@/lib/db/queries";
+import { getOutreachEmailWithRecipient, updateOutreachEmail, getFollowupParent, addressHasOtherSentInitial } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
 import { isRoleEmail } from "@/lib/email/roleEmail";
 import { acquireLock, releaseLock, incrDailyCount } from "@/lib/redis";
@@ -29,9 +29,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       await updateOutreachEmail(id, { status: "failed", error: "Skipped: generic/role address (not a person)", followup_skipped: true });
       return NextResponse.json({ ok: false, error: "generic/role address — not sent" });
     }
-    // Manual "Send now" is an explicit human action — no silent duplicate-address block here.
-    // The Emails page shows a "contacted" tag (with override) before you ever get to send.
     const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
+
+    // Same send-time duplicate-inbox guard as the cron loop: never send an INITIAL to an inbox
+    // that already got an initial from another thread. Not silent — the caller gets a clear
+    // reason. Follow-ups / negotiation replies and admin test-sends (recipient_override) are exempt.
+    if (!isThreadReply && !(email as any).recipient_override &&
+        await addressHasOtherSentInitial(email.recipient, id)) {
+      await updateOutreachEmail(id, { status: "failed", error: "Skipped: recipient inbox already contacted in another campaign", followup_skipped: true });
+      return NextResponse.json({ ok: false, error: "This inbox was already contacted in another campaign — not sent." });
+    }
 
     let inReplyTo: string | undefined;
     if (isThreadReply && (email as any).parent_id) {

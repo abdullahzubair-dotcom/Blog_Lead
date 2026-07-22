@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent } from "@/lib/db/queries";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, addressHasOtherSentInitial } from "@/lib/db/queries";
 import { isRoleEmail } from "@/lib/email/roleEmail";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
     return senderCache.get(email)!;
   };
 
-  let sent = 0, failed = 0, cappedSkipped = 0;
+  let sent = 0, failed = 0, cappedSkipped = 0, dupSkipped = 0;
   const results: Array<{ id: string; ok: boolean; error?: string }> = [];
 
   try {
@@ -79,11 +79,20 @@ export async function POST(req: NextRequest) {
         results.push({ id: email.id, ok: false, error: "role address" });
         continue;
       }
-      // Duplicate-address dedupe is handled UPSTREAM now: at schedule time (getContactedAuthorIds,
-      // email-address aware) and shown as a "contacted" tag on the Emails page with a manual
-      // override. We deliberately do NOT silently drop here — if it got scheduled, it sends
-      // (honoring the human's override). Threaded replies were always exempt anyway.
       const isThreadReply = (email as any).kind === "followup" || (email as any).kind === "negotiation";
+
+      // Send-time duplicate-inbox guard (INITIALS only). The schedule-time contacted guard is a
+      // point-in-time snapshot, so two workflows can each schedule the same inbox moments apart
+      // and both come due. Here, at the moment of sending, we skip an initial whose recipient
+      // inbox has already been sent another initial. Follow-ups and negotiation replies are
+      // exempt (they legitimately continue an existing thread), and admin test-sends
+      // (recipient_override) are exempt so they always deliver to the test address.
+      if (!isThreadReply && !(email as any).recipient_override &&
+          await addressHasOtherSentInitial(email.recipient, email.id)) {
+        await updateOutreachEmail(email.id, { status: "failed", error: "Skipped: recipient inbox already contacted in another campaign", followup_skipped: true });
+        dupSkipped++; results.push({ id: email.id, ok: false, error: "duplicate inbox — contacted elsewhere" });
+        continue;
+      }
 
       const sender = (email as any).sender_email as string | undefined;
       const sentBy = (email as any).sent_by_email as string | undefined;
@@ -172,7 +181,7 @@ export async function POST(req: NextRequest) {
       followups = await runFollowups();
     } catch (e: any) { followups.errors.push(e?.message ?? "followup error"); }
 
-    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, replies, negotiations, followups, results });
+    return NextResponse.json({ due: due.length, sent, failed, cappedSkipped, dupSkipped, replies, negotiations, followups, results });
   } finally {
     await releaseLock(LOCK_KEY, lockToken);
   }

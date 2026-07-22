@@ -132,19 +132,27 @@ export async function upsertContact(data: Partial<Contact> & { type: string; val
   return contact;
 }
 
-// Has this exact recipient address already been SENT an outreach email (any author)? Used to
-// dedupe: many authors can share one address, but we only ever email that inbox once.
-export async function recipientAlreadyContacted(recipientEmail: string, excludeId?: string): Promise<boolean> {
+// Send-time safety net: has this exact recipient inbox ALREADY been sent an INITIAL from some
+// OTHER thread? Many authors can share one address, and two workflows can each schedule the
+// same person moments apart (the schedule-time contacted guard is a point-in-time snapshot), so
+// we re-check at the moment of sending. Only sent INITIALS count (never our own follow-ups or
+// negotiation replies, which legitimately reuse an already-emailed inbox within their thread),
+// and test/redirected sends (recipient_override set) are ignored because they never actually
+// reached this inbox.
+export async function addressHasOtherSentInitial(recipientEmail: string, excludeId: string): Promise<boolean> {
   const clean = recipientEmail.replace(/^mailto:/i, "").trim().toLowerCase();
   if (!clean) return false;
   const { data } = await supabaseAdmin
     .from("outreach_emails")
     .select("id, author:authors!inner(contacts!inner(type, value))")
     .eq("status", "sent")
+    .or("kind.eq.initial,kind.is.null")
+    .is("recipient_override", null)
     .eq("author.contacts.type", "mailto")
     .ilike("author.contacts.value", `mailto:${clean}`)
-    .limit(2);
-  return (data ?? []).some((r: any) => r.id !== excludeId);
+    .neq("id", excludeId)
+    .limit(1);
+  return (data ?? []).length > 0;
 }
 
 // ─── Mentions ────────────────────────────────────────────────────────────────
@@ -1537,29 +1545,47 @@ export async function updateOutreachEmail(id: string, data: {
 // Outstanding sent emails (last N days, no reply yet) grouped by the mailbox that sent
 // them, with the recipient + subject needed for reply matching. sender_email "" = legacy
 // env-sender sends (checked against the env SMTP account).
-export async function getOutstandingSentForReplyCheck(days = 30, opts: { includeReplied?: boolean } = {}): Promise<Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>> {
+export async function getOutstandingSentForReplyCheck(days = 30, opts: { includeReplied?: boolean } = {}): Promise<Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string; kind: string | null; parent_id: string | null }>>> {
   const since = new Date(Date.now() - days * 86400_000).toISOString();
   // Normal sweep skips already-replied and already-bounced sends. A rescan (includeReplied)
   // re-examines everything so mis-classified past "replies" (bounces) get corrected.
   let q = supabaseAdmin
     .from("outreach_emails")
-    .select("id, author_id, sender_email, message_id, subject, sent_at, author:authors(contacts(type, value))")
+    .select("id, author_id, sender_email, message_id, subject, sent_at, kind, parent_id, author:authors(contacts(type, value))")
     .eq("status", "sent")
     .is("bounced_at", null)
     .gte("sent_at", since)
     .limit(2000);
   if (!opts.includeReplied) q = q.is("replied_at", null);
   const { data } = await q;
-  const out = new Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string }>>();
+  const out = new Map<string, Array<{ id: string; author_id: string; message_id: string | null; recipient: string; subject: string; sent_at: string; kind: string | null; parent_id: string | null }>>();
   for (const e of data ?? []) {
     const mailto = ((e as any).author?.contacts ?? []).find((c: any) => c.type === "mailto");
     const recipient = mailto ? (mailto.value as string).replace(/^mailto:/, "") : "";
     if (!recipient) continue;
     const key = (e as any).sender_email ?? "";
     if (!out.has(key)) out.set(key, []);
-    out.get(key)!.push({ id: e.id, author_id: (e as any).author_id, message_id: (e as any).message_id ?? null, recipient, subject: e.subject ?? "", sent_at: (e as any).sent_at });
+    out.get(key)!.push({ id: e.id, author_id: (e as any).author_id, message_id: (e as any).message_id ?? null, recipient, subject: e.subject ?? "", sent_at: (e as any).sent_at, kind: (e as any).kind ?? null, parent_id: (e as any).parent_id ?? null });
   }
   return out;
+}
+
+// Record a detected inbound reply on a thread's ANCHOR (initial) row, idempotently. Returns
+// true only when this is a genuinely new/changed reply (so the caller counts it and cancels
+// pending follow-ups). If the anchor already carries the same reply excerpt, it does nothing
+// and returns false — so re-seeing the same message on a later IMAP sweep never bumps
+// replied_at (which would wrongly re-trigger auto-negotiation).
+export async function recordReplyOnAnchor(
+  anchorId: string,
+  meta: { reply_kind?: string | null; reply_from?: string | null; reply_subject?: string | null; reply_excerpt?: string | null; reply_sentiment?: string | null },
+  nowIso: string,
+): Promise<boolean> {
+  const { data } = await supabaseAdmin.from("outreach_emails").select("replied_at, reply_excerpt").eq("id", anchorId).maybeSingle();
+  const prev = ((data as any)?.reply_excerpt ?? "").trim();
+  const next = (meta.reply_excerpt ?? "").trim();
+  if ((data as any)?.replied_at && prev && prev === next) return false; // same reply already recorded
+  await supabaseAdmin.from("outreach_emails").update({ ...meta, replied_at: nowIso, bounced_at: null }).eq("id", anchorId);
+  return true;
 }
 
 export async function markEmailsReplied(ids: string[]): Promise<void> {

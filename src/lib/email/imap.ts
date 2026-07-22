@@ -8,7 +8,7 @@ import { redis } from "@/lib/redis";
 import { decryptSecret } from "@/lib/crypto";
 import {
   getUserAppPasswordEnc, getOutstandingSentForReplyCheck, updateOutreachEmail, markRepliesChecked, setAuthorDiscarded,
-  stopPendingFollowupsForAuthor,
+  stopPendingFollowupsForAuthor, getEnabledSharedSenders, recordReplyOnAnchor,
 } from "@/lib/db/queries";
 
 const normId = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
@@ -23,6 +23,8 @@ export interface OutstandingSent {
   recipient: string;
   subject: string;
   sent_at: string;
+  kind?: string | null;       // initial | followup | negotiation (null = legacy initial)
+  parent_id?: string | null;  // thread anchor for followup/negotiation rows
 }
 
 export interface MatchInfo { uid: number; kind: ReplyKind; from: string; subject: string; excerpt: string }
@@ -82,9 +84,17 @@ export async function fetchExcerpt(client: ImapFlow, uid: number, structure: any
 
 // Connect to one mailbox and return, per outstanding email that got an inbound match, the
 // classification + who it was from + subject + a readable excerpt.
-export async function detectReplies(user: string, pass: string, outstanding: OutstandingSent[]): Promise<Map<string, MatchInfo>> {
+export async function detectReplies(user: string, pass: string, outstanding: OutstandingSent[], ownAddresses?: Set<string>): Promise<Map<string, MatchInfo>> {
   const matches = new Map<string, MatchInfo>();
   if (outstanding.length === 0) return matches;
+
+  // Never treat a message WE sent as an inbound reply. Our own threaded follow-up (subject
+  // "Re: ...", References: <the initial's message-id>) or a test send can land back in the
+  // scanned mailbox; without this it matches the initial and gets counted as if the prospect
+  // replied. A genuine reply is always FROM the prospect, never from one of our own addresses,
+  // so filtering these out cannot drop a real reply.
+  const own = new Set<string>([user.toLowerCase()]);
+  for (const a of ownAddresses ?? []) if (a) own.add(a.toLowerCase());
 
   const byMsgId = new Map<string, string>();
   for (const o of outstanding) if (o.message_id) byMsgId.set(normId(o.message_id), o.id);
@@ -112,6 +122,10 @@ export async function detectReplies(user: string, pass: string, outstanding: Out
         const hlow = hdr.toLowerCase();
         const from = (msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
         const subject = msg.envelope?.subject ?? "";
+
+        // Skip anything we sent ourselves (our own follow-up in the thread, a test send that
+        // came back to this inbox) — it is never a prospect reply.
+        if (from && own.has(from)) continue;
 
         // Which of our sends does this inbound message reference?
         let hitId: string | null = null;
@@ -163,6 +177,14 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
   const bySender = await getOutstandingSentForReplyCheck(backfillDays, { includeReplied: opts.rescanAll });
   const result: ReplyDetectionResult = { accountsChecked: 0, repliesFound: 0, bounces: 0, autoReplies: 0, discarded: 0, errors: [] };
 
+  // Every address we send FROM — so detectReplies can ignore our own messages (a threaded
+  // follow-up or a test send that landed back in a scanned mailbox is not a prospect reply).
+  const ownAddresses = new Set<string>();
+  for (const s of bySender.keys()) if (s) ownAddresses.add(s.toLowerCase());
+  for (const s of await getEnabledSharedSenders().catch(() => [])) if (s.email) ownAddresses.add(s.email.toLowerCase());
+  if (process.env.SMTP_USER) ownAddresses.add(process.env.SMTP_USER.toLowerCase());
+  if (process.env.SMTP_FROM_EMAIL) ownAddresses.add(process.env.SMTP_FROM_EMAIL.toLowerCase());
+
   const nowIso = new Date().toISOString();
   for (const [sender, list] of bySender) {
     const account = sender || (process.env.SMTP_USER ?? "");
@@ -175,19 +197,29 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
     try {
       result.accountsChecked++;
       const authorById = new Map(list.map((o) => [o.id, o.author_id]));
-      const matches = await detectReplies(account, pass, list);
+      const rowById = new Map(list.map((o) => [o.id, o]));
+      const matches = await detectReplies(account, pass, list, ownAddresses);
       for (const [id, m] of matches) {
         const meta = { reply_kind: m.kind, reply_from: m.from || null, reply_subject: m.subject || null, reply_excerpt: m.excerpt || null };
         if (m.kind === "reply") {
           // Sentiment of a genuine reply, best-effort (surfaced in the inbox list).
           const { analyzeSentiment } = await import("@/lib/email/inbox");
           const sentiment = await analyzeSentiment(m.excerpt || m.subject).catch(() => null);
-          await updateOutreachEmail(id, { ...meta, reply_sentiment: sentiment, replied_at: nowIso, bounced_at: null });
-          result.repliesFound++;
-          // They replied — immediately stop any follow-up already scheduled to them, so a
-          // queued nudge can't land after they've engaged (closes the schedule→reply→send gap).
-          const authorId = authorById.get(id);
-          if (authorId) await stopPendingFollowupsForAuthor(authorId, "Canceled: recipient replied").catch(() => 0);
+          // Attribute the reply to the THREAD ANCHOR (the initial), never to our own follow-up
+          // or negotiation row — otherwise one real reply gets stamped onto both the initial and
+          // our follow-up (the "FOLLOW-UP + REPLIED" double badge). recordReplyOnAnchor is
+          // idempotent: it won't re-stamp the same reply on a later sweep (which would bump
+          // replied_at and wrongly re-trigger auto-negotiation).
+          const row = rowById.get(id);
+          const anchorId = row && row.kind && row.kind !== "initial" && row.parent_id ? row.parent_id : id;
+          const isNew = await recordReplyOnAnchor(anchorId, { ...meta, reply_sentiment: sentiment }, nowIso);
+          if (isNew) {
+            result.repliesFound++;
+            // They replied — immediately stop any follow-up already scheduled to them, so a
+            // queued nudge can't land after they've engaged (closes the schedule→reply→send gap).
+            const authorId = authorById.get(id);
+            if (authorId) await stopPendingFollowupsForAuthor(authorId, "Canceled: recipient replied").catch(() => 0);
+          }
         } else if (m.kind === "bounce") {
           // Not a reply — the address bounced. Clear any bogus reply mark, record the bounce,
           // skip follow-ups to a dead address, and discard the author (bad/wrong email) so

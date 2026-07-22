@@ -16,12 +16,17 @@ const EXACT = new Set([
   "mail", "email", "notifications", "notification", "no-reply", "donotreply", "postmaster",
   "staff", "subscription", "subscriptions", "subs", "developer", "dev", "devrel", "devs",
   "group", "groups", "reception", "welcome", "service", "services", "orders", "order",
+  // inquiry / submission desks and other non-person mailboxes seen in the wild
+  "submissions", "submission", "submit", "care", "customercare", "customerservice", "customer",
+  "partner", "obits", "obituaries", "alerts", "alert", "bot",
 ]);
 // Collapsed local-part contains one of these → generic (catches compound role addresses).
+// Only DISTINCTIVE stems that can't appear inside a human name (never short/name-like tokens).
 const CONTAINS = [
   "pressinquir", "pressoffice", "pressteam", "brandlicens", "adinquir", "mediarelation",
   "newsroom", "noreply", "donotreply", "do-not-reply", "mailerdaemon", "postmaster",
   "unsubscribe", "pressrelease", "mediateam", "presscontact", "subscription", "groupsubscri",
+  "submiss", "inquir", "enquir", "editorial", "newsdesk", "customercare", "customerservice",
 ];
 
 export function isRoleEmail(raw: string | null | undefined): boolean {
