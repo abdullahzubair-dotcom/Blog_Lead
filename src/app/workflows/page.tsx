@@ -148,9 +148,10 @@ function ProspectRow({
   const liUrl = li ? (li.value.startsWith("http") ? li.value : `https://${li.value}`) : null;
 
   return (
-    <div className={`flex items-center gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-muted/30 transition-colors ${!p.included ? "opacity-50" : ""}`}>
+    <div className={`flex items-center gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-muted/30 transition-colors ${!p.included || contacted ? "opacity-50" : ""}`}>
       <Checkbox
-        checked={p.included}
+        checked={p.included && !contacted}
+        disabled={contacted}
         onCheckedChange={(v) => onToggle(p.author_id, v === true)}
       />
       <Avatar className="h-8 w-8 shrink-0">
@@ -171,7 +172,7 @@ function ProspectRow({
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {contacted && (
-          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-amber-400 border-amber-500/40" title="Already emailed/queued in another campaign">
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-amber-400 border-amber-500/40" title="Already emailed or in an active thread in another campaign — excluded from this send. Open the profile to allow emailing them again.">
             contacted
           </Badge>
         )}
@@ -409,7 +410,13 @@ export default function WorkflowsPage() {
     return name.includes(q) || pub.includes(q);
   });
 
-  const includedCount = prospects.filter((p) => p.included).length;
+  // People already emailed / in an active thread in another campaign are hard-dropped by the send
+  // route even if left checked, so don't treat them as selectable or count them here either — the
+  // list should visibly not overlap with anyone already reached.
+  const contactedCount = prospects.filter((p) => contactedElsewhere.has(p.author_id)).length;
+  const selectableProspects = prospects.filter((p) => !contactedElsewhere.has(p.author_id));
+  const allSelectableIncluded = selectableProspects.length > 0 && selectableProspects.every((p) => p.included);
+  const includedCount = selectableProspects.filter((p) => p.included).length;
 
   // Unique websites across all prospects — each author's primary domain + every domain they've
   // written an article on. Deduped by host, with DR, and the set of prospects who touch each
@@ -642,18 +649,16 @@ export default function WorkflowsPage() {
               </Button>
               <p className="text-xs text-muted-foreground ml-auto">
                 {includedCount} of {prospects.length} selected
+                {contactedCount > 0 && <span className="text-amber-400"> · {contactedCount} already contacted (excluded)</span>}
               </p>
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-7 text-xs"
-                disabled={prospects.length === 0}
-                onClick={() => {
-                  const allIncluded = prospects.length > 0 && prospects.every((p) => p.included);
-                  toggleAll(!allIncluded);
-                }}
+                disabled={selectableProspects.length === 0}
+                onClick={() => toggleAll(!allSelectableIncluded)}
               >
-                {prospects.length > 0 && prospects.every((p) => p.included) ? "Deselect all" : "Select all"}
+                {allSelectableIncluded ? "Deselect all" : "Select all"}
               </Button>
               <Button variant="ghost" size="sm" className="h-7 text-xs text-red-400 hover:text-red-300 gap-1" disabled={prospects.length === 0} onClick={removeAll}>
                 <Trash2 className="h-3.5 w-3.5" />Remove all
