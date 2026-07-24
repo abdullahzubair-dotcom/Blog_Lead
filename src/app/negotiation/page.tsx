@@ -92,7 +92,13 @@ export default function NegotiationPage() {
 
   const rows = threads.filter((t) => t.category === tab && (!senderFilter || t.sender === senderFilter));
   // Distinct sending accounts across all threads — powers the "sent from" searchable filter.
-  const senderOptions = [...new Set(threads.map((t) => t.sender).filter(Boolean))].sort().map((s) => ({ id: s as string, label: s as string }));
+  // One option per sending account, with a count of how many threads that sender has IN THE CURRENT
+  // TAB (e.g. how many "Negotiating" each teammate has) shown beside their name.
+  const senderOptions = [...new Set(threads.map((t) => t.sender).filter(Boolean))].sort().map((s) => ({
+    id: s as string,
+    label: s as string,
+    hint: threads.filter((t) => t.category === tab && t.sender === s).length,
+  }));
   const dateOf = (t: Thread) => t.repliedAt ?? t.bouncedAt ?? t.sentAt ?? null;
   // Group the current tab's threads by the account they were sent from (mirrors the Sending page),
   // newest activity first within each account and across accounts.

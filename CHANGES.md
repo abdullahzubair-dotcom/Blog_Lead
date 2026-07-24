@@ -77,6 +77,13 @@ Inbox API:  src/app/api/inbox/[id]/reply/route.ts                (record our rep
 Inbox UI:   src/app/inbox/page.tsx                               (AI + needs-reply list badges; AI-negotiating header badge)
 ```
 
+## 6. Negotiation page — per-sender counts in the "sent from" filter
+
+`src/app/negotiation/page.tsx`: the searchable sender dropdown now shows a **count beside each
+teammate** = how many threads that sender has **in the current tab** (e.g. how many *Negotiating*
+each person has). Implemented via the `hint` field on `SearchableSelect` options (no component
+change needed — it already renders `hint`). Count is `threads.filter(category===tab && sender===s).length`.
+
 ## 5. Manual checks after porting
 1. Run migration 041.
 2. `npx tsc --noEmit && npm run build`.
