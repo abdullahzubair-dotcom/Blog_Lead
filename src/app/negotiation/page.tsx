@@ -158,6 +158,12 @@ export default function NegotiationPage() {
       if (r.error) toast.error(r.error);
       else if (action === "send") { toast.success(`Sent to ${r.to}`); setOpen(null); }
       else toast.success("Draft discarded");
+      // Clear the editable draft + cached conversation for this thread so a sent/discarded reply
+      // can't linger as a re-sendable textarea (the sent copy now lives only in the conversation).
+      if (!r.error) {
+        setEditBody((s) => { const n = { ...s }; delete n[t.id]; return n; });
+        setConvo((c) => { const n = { ...c }; delete n[t.id]; return n; });
+      }
       load();
     } catch (e: any) { toast.error(e?.message ?? "failed"); } finally { setBusy(null); }
   };
@@ -204,7 +210,9 @@ export default function NegotiationPage() {
               </div>
             ))}
           </div>
-          {editBody[t.id] !== undefined ? (
+          {t.draftStatus === "sent" ? (
+            <p className="text-[11px] uppercase tracking-wide text-green-400 flex items-center gap-1.5"><Send className="h-3 w-3" />AI reply sent, shown above in the conversation</p>
+          ) : editBody[t.id] !== undefined ? (
             <div className="space-y-2">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI draft reply (edit before sending)</p>
               <Textarea rows={7} value={editBody[t.id]} onChange={(e) => setEditBody((s) => ({ ...s, [t.id]: e.target.value }))} className="text-sm" />

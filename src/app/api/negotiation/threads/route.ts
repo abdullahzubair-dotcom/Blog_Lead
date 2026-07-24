@@ -53,7 +53,9 @@ export async function GET() {
         aiManaged: r.ai_managed, subject: r.subject, replyExcerpt: r.reply_excerpt,
         sender: r.sender_email,
         draftStatus: draftByParent.get(r.id)?.status ?? null,
-        draftBody: draftByParent.get(r.id)?.body ?? null,
+        // Only an UNSENT draft (draft/failed) is editable/sendable. Once sent, it is read-only
+        // history (badge "AI replied"), so don't hand the page a body to re-show or re-send.
+        draftBody: draftByParent.get(r.id)?.status === "sent" ? null : (draftByParent.get(r.id)?.body ?? null),
       };
     });
 

@@ -1998,7 +1998,9 @@ export async function getConversation(anchorId: string): Promise<ConvoMessage[]>
     .order("created_at", { ascending: true });
   const msgs: ConvoMessage[] = [];
   for (const r of (data ?? []) as any[]) {
-    if (r.body && r.status !== "failed") msgs.push({ from: "us", body: r.body, at: r.sent_at ?? r.created_at, kind: r.kind });
+    // Only actually-sent messages belong in the conversation history. An unsent draft ('draft')
+    // is shown separately in the editable draft box, so including it here double-renders it.
+    if (r.body && r.status !== "failed" && r.status !== "draft") msgs.push({ from: "us", body: r.body, at: r.sent_at ?? r.created_at, kind: r.kind });
     if (r.reply_excerpt) msgs.push({ from: "them", body: r.reply_excerpt, at: r.replied_at });
   }
   return msgs;

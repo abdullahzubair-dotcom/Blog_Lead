@@ -14,6 +14,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       getConversation(id),
       supabaseAdmin.from("outreach_emails")
         .select("id, body, status, subject, created_at").eq("parent_id", id).eq("kind", "negotiation")
+        .in("status", ["draft", "failed"]) // only an actionable (unsent) draft; a sent reply is history, not a draft
         .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     return NextResponse.json({ conversation, draft: draftRow ?? null });

@@ -2,8 +2,16 @@ import { supabaseAdmin } from "@/lib/db/supabase";
 import { getNegotiationSettings } from "./settings";
 import { maxOfferFor } from "./pricing";
 import { classifyReplyIntent, draftNegotiationReply, type ThreadMessage } from "./agent";
-import { updateOutreachEmail } from "@/lib/db/queries";
+import { updateOutreachEmail, getUserEmailConfig } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
+
+// The reply goes out from the initial's sender inbox, so it must be SIGNED by that person, not a
+// hardcoded name. Prefer their configured From name; else derive a first name from the address.
+function firstNameFromEmail(e?: string | null): string | undefined {
+  if (!e) return undefined;
+  const local = (e.split("@")[0] || "").split(/[._+-]/)[0] || "";
+  return local ? local.charAt(0).toUpperCase() + local.slice(1) : undefined;
+}
 
 export interface NegotiationResult {
   ok: boolean; draftId?: string; body?: string; ceiling: number | null;
@@ -48,11 +56,16 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
   const tier = maxOfferFor(dom?.dr ?? null, dom?.organic_traffic ?? null, dom?.us_traffic_share ?? null, settings.pricing_rules);
   const ceiling = (email as any).max_offer != null ? Number((email as any).max_offer) : (tier?.offer ?? null);
 
+  // Sign as the person whose inbox this reply is sent from (initial.sender_email).
+  const senderCfg = (initial as any).sender_email ? await getUserEmailConfig((initial as any).sender_email).catch(() => null) : null;
+  const senderName = (senderCfg?.from_name?.trim().split(/\s+/)[0]) || firstNameFromEmail((initial as any).sender_email);
+
   const draft = await draftNegotiationReply({
     settings, thread,
     authorName: (email as any).author?.full_name ?? "there",
     publication: dom?.name ?? dom?.host ?? "",
     ceiling, floor: settings.min_price, lastIntent: cls.intent, theirPrice: cls.priceMentioned,
+    senderName,
   });
   if (!draft) return { ...base, ceiling, intent: cls.intent, error: "No OPENROUTER_API_KEY configured" };
 
