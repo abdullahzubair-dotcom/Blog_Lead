@@ -11,7 +11,7 @@ export async function GET() {
     const settings = await getNegotiationSettings();
     const { data } = await supabaseAdmin
       .from("outreach_emails")
-      .select("id, author_id, subject, status, replied_at, bounced_at, reply_kind, reply_sentiment, reply_excerpt, reply_subject, negotiation_status, ai_managed, max_offer, sent_at, created_at, sender_email, author:authors(full_name, domain:domains(host, name, dr, organic_traffic, us_traffic_share))")
+      .select("id, author_id, subject, status, replied_at, bounced_at, reply_kind, reply_sentiment, reply_excerpt, reply_subject, reply_from, negotiation_status, ai_managed, max_offer, sent_at, created_at, sender_email, intervention_type, intervention_reason, intervention_ask, intervention_assist_input, intervention_asset_name, author:authors(full_name, domain:domains(host, name, dr, organic_traffic, us_traffic_share))")
       .eq("kind", "initial")
       .order("sent_at", { ascending: false, nullsFirst: false })
       .limit(1000);
@@ -37,8 +37,11 @@ export async function GET() {
       // Buckets: bounced / automated / hard_no / agreed take precedence. Then a reply that we
       // have NOT answered yet = needs_reply; one we've replied to = negotiating. No reply yet
       // (AI-managed, scheduled or sent) = queued (waiting on them).
+      // needs_human is checked BEFORE automated so an OOO-with-alternate-contact lands in Human
+      // intervention (redirect) rather than the dead-end automated bucket.
       let category: string;
       if (r.bounced_at) category = "bounced";
+      else if (r.negotiation_status === "needs_human") category = "needs_human";
       else if (r.reply_kind === "auto") category = "automated";
       else if (r.negotiation_status === "declined") category = "hard_no";
       else if (r.negotiation_status === "agreed") category = "agreed";
@@ -51,7 +54,12 @@ export async function GET() {
         ceiling, category, replyKind: r.reply_kind, sentiment: r.reply_sentiment,
         repliedAt: r.replied_at, bouncedAt: r.bounced_at, sentAt: r.sent_at, negotiationStatus: r.negotiation_status,
         aiManaged: r.ai_managed, subject: r.subject, replyExcerpt: r.reply_excerpt,
-        sender: r.sender_email,
+        sender: r.sender_email, replyFrom: r.reply_from,
+        interventionType: r.intervention_type ?? null,
+        interventionReason: r.intervention_reason ?? null,
+        interventionAsk: r.intervention_ask ?? null,
+        interventionAssistInput: r.intervention_assist_input ?? null,
+        interventionAssetName: r.intervention_asset_name ?? null,
         draftStatus: draftByParent.get(r.id)?.status ?? null,
         // Only an UNSENT draft (draft/failed) is editable/sendable. Once sent, it is read-only
         // history (badge "AI replied"), so don't hand the page a body to re-show or re-send.

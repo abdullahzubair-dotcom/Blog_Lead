@@ -13,6 +13,23 @@ function firstNameFromEmail(e?: string | null): string | undefined {
   return local ? local.charAt(0).toUpperCase() + local.slice(1) : undefined;
 }
 
+// Human-readable "why a person is needed" per intervention type (shown on the Negotiation page).
+const INTERVENTION_REASON: Record<string, string> = {
+  asset_request: "They want a document/assets the AI cannot attach on its own.",
+  identity_verification: "They want proof of who we are (LinkedIn / website / references).",
+  sync_contact: "They want a live call or meeting, which only a person can take.",
+  scheduling: "They want availability or a calendar link.",
+  redirect: "They pointed us to a different contact to email.",
+  process_portal: "They want us to submit via a form/portal or create an account.",
+  legal_contract: "They want a contract/NDA handled or signed.",
+  payment_details: "They want invoice/PO/bank/tax details.",
+  factual_question: "They asked a factual question the AI must not fabricate.",
+  over_policy: "They want terms beyond our price ceiling or policy.",
+  inbound_attachment: "They sent a file for us to review.",
+  other_channel: "They want to move to another channel (WhatsApp/phone/etc.).",
+  other: "This reply needs a person to handle it.",
+};
+
 export interface NegotiationResult {
   ok: boolean; draftId?: string; body?: string; ceiling: number | null;
   suggestedOffer: number | null; statusHint: string | null; intent: string | null;
@@ -23,8 +40,9 @@ export interface NegotiationResult {
 // Generate (and, when autonomy is ON, immediately SEND) the AI's next negotiation reply for a
 // thread. Used by the Negotiation page button AND the send-processor's auto-negotiation loop.
 // forceDraft = never auto-send even if autonomy is on (the "just draft it" path).
-export async function negotiateThread(emailId: string, opts?: { forceDraft?: boolean }): Promise<NegotiationResult> {
+export async function negotiateThread(emailId: string, opts?: { forceDraft?: boolean; assistInput?: string | null }): Promise<NegotiationResult> {
   const base: NegotiationResult = { ok: false, ceiling: null, suggestedOffer: null, statusHint: null, intent: null, autonomy: false, persistedAs: "draft", sent: false };
+  const assisting = !!(opts?.assistInput && opts.assistInput.trim());
 
   const { data: email } = await supabaseAdmin
     .from("outreach_emails")
@@ -56,6 +74,32 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
   const tier = maxOfferFor(dom?.dr ?? null, dom?.organic_traffic ?? null, dom?.us_traffic_share ?? null, settings.pricing_rules);
   const ceiling = (email as any).max_offer != null ? Number((email as any).max_offer) : (tier?.offer ?? null);
 
+  // HUMAN-INTERVENTION SHORT-CIRCUIT. If the writer asked for something the AI cannot do (a
+  // document/call/redirect/etc.) and no human assist input was supplied, never draft or send a
+  // hollow reply — flag the thread for a person and stop. (When assisting, the human HAS provided
+  // what's needed, so we fall through and draft a truthful reply.)
+  if (cls.intent === "needs_human" && !assisting) {
+    await supabaseAdmin.from("outreach_emails").delete().eq("parent_id", initialId).eq("kind", "negotiation").eq("status", "draft");
+    const itype = cls.interventionType ?? "other";
+    await updateOutreachEmail(initialId, {
+      negotiation_status: "needs_human",
+      intervention_type: itype,
+      intervention_ask: cls.interventionAsk ?? "asked for something the AI cannot do",
+      intervention_reason: INTERVENTION_REASON[itype] ?? INTERVENTION_REASON.other,
+      intervention_at: new Date().toISOString(),
+      negotiation_notes: `needs human: ${itype} — ${cls.interventionAsk ?? ""}`,
+    } as any);
+    return { ...base, ok: true, ceiling, intent: cls.intent, statusHint: "needs_human", persistedAs: "needs_human" };
+  }
+
+  // When assisting, load any uploaded document so the draft can truthfully say it's attached.
+  let asset: { name: string; mime: string; b64: string } | null = null;
+  if (assisting) {
+    const { data: a } = await supabaseAdmin.from("outreach_emails")
+      .select("intervention_asset_name, intervention_asset_mime, intervention_asset_b64").eq("id", initialId).maybeSingle();
+    if ((a as any)?.intervention_asset_b64) asset = { name: (a as any).intervention_asset_name || "attachment", mime: (a as any).intervention_asset_mime || "application/octet-stream", b64: (a as any).intervention_asset_b64 };
+  }
+
   // Sign as the person whose inbox this reply is sent from (initial.sender_email).
   const senderCfg = (initial as any).sender_email ? await getUserEmailConfig((initial as any).sender_email).catch(() => null) : null;
   const senderName = (senderCfg?.from_name?.trim().split(/\s+/)[0]) || firstNameFromEmail((initial as any).sender_email);
@@ -66,11 +110,29 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
     publication: dom?.name ?? dom?.host ?? "",
     ceiling, floor: settings.min_price, lastIntent: cls.intent, theirPrice: cls.priceMentioned,
     senderName,
+    assistInput: assisting ? opts!.assistInput : null,
+    assistHasAttachment: !!asset,
   });
   if (!draft) return { ...base, ceiling, intent: cls.intent, error: "No OPENROUTER_API_KEY configured" };
 
+  // Post-generation guard tripped inside the agent (model tried to promise a capability with no
+  // backing input): route to a human instead of sending the fabricated reply.
+  if (draft.needsHuman) {
+    await supabaseAdmin.from("outreach_emails").delete().eq("parent_id", initialId).eq("kind", "negotiation").eq("status", "draft");
+    const itype = draft.interventionType ?? "other";
+    await updateOutreachEmail(initialId, {
+      negotiation_status: "needs_human",
+      intervention_type: itype,
+      intervention_ask: draft.interventionAsk ?? "reply would need something the AI cannot provide",
+      intervention_reason: INTERVENTION_REASON[itype] ?? INTERVENTION_REASON.other,
+      intervention_at: new Date().toISOString(),
+      negotiation_notes: `needs human (guard): ${itype}`,
+    } as any);
+    return { ...base, ok: true, ceiling, intent: "needs_human", statusHint: "needs_human", persistedAs: "needs_human" };
+  }
+
   const subject = /^re:/i.test(initial.subject ?? "") ? initial.subject : `Re: ${initial.subject ?? "(no subject)"}`;
-  const autonomy = settings.ai_autonomy && !opts?.forceDraft && cls.intent !== "hard_no" && cls.intent !== "unsubscribe";
+  const autonomy = settings.ai_autonomy && !opts?.forceDraft && cls.intent !== "hard_no" && cls.intent !== "unsubscribe" && cls.intent !== "needs_human";
 
   const { data: mc } = await supabaseAdmin.from("contacts").select("value").eq("author_id", initial.author_id).eq("type", "mailto").limit(1).maybeSingle();
   // Test-send override on the initial keeps the whole AI thread on the test address.
@@ -104,6 +166,9 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
     negotiation_status: draft.statusHint,
     negotiation_notes: `their intent: ${cls.intent} (${cls.reason}); our offer: ${draft.suggestedOffer ?? "-"}; ceiling: ${ceiling ?? "placement-only"}`,
     ...(draft.statusHint === "agreed" ? { agreed_price: agreedPrice, payment_status: agreedPrice ? "owed" : null } : {}),
+    // Assisting resolves the intervention: clear the ask/reason so it leaves the Human-intervention
+    // bucket. The uploaded asset (if any) is kept until the reply is actually sent, then cleared.
+    ...(assisting ? { intervention_ask: null, intervention_reason: null, intervention_at: null, intervention_type: null } : {}),
   } as any);
 
   return {

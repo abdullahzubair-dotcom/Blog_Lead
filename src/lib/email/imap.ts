@@ -14,6 +14,18 @@ import {
 const normId = (s: string) => s.replace(/[<>]/g, "").trim().toLowerCase();
 const normSubject = (s: string) => s.replace(/^((re|fw|fwd)\s*:\s*)+/i, "").trim().toLowerCase();
 
+// Pull an alternate contact address out of an out-of-office body ("for urgent matters email X"),
+// skipping our own addresses, the original recipient, and no-reply/daemon addresses.
+function extractAltEmail(text: string, exclude: Set<string>): string | null {
+  const found = (text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) || []).map((e) => e.toLowerCase());
+  for (const e of found) {
+    if (exclude.has(e)) continue;
+    if (/no-?reply|donotreply|do-not-reply|mailer-?daemon|postmaster|noreply/.test(e)) continue;
+    return e;
+  }
+  return null;
+}
+
 export type ReplyKind = "reply" | "bounce" | "auto";
 
 export interface OutstandingSent {
@@ -234,6 +246,24 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
         } else {
           await updateOutreachEmail(id, { ...meta, replied_at: null });
           result.autoReplies++;
+          // Out-of-office often names an alternate contact ("for urgent matters email X"). If we can
+          // find one that isn't us or the same recipient, park the thread for a human REDIRECT
+          // instead of letting it die in the 'automated' bucket.
+          const row = rowById.get(id);
+          const exclude = new Set<string>([...ownAddresses]);
+          if (row?.recipient) exclude.add(row.recipient.toLowerCase());
+          const alt = extractAltEmail(m.excerpt || "", exclude);
+          if (alt) {
+            const anchorId = row && row.kind && row.kind !== "initial" && row.parent_id ? row.parent_id : id;
+            await updateOutreachEmail(anchorId, {
+              negotiation_status: "needs_human",
+              intervention_type: "redirect",
+              intervention_ask: `Out-of-office names an alternate contact: ${alt}`,
+              intervention_reason: "Auto-reply points to a different contact to email.",
+              intervention_assist_input: alt,
+              intervention_at: nowIso,
+            } as any);
+          }
         }
       }
       await markRepliesChecked(list.map((o) => o.id));

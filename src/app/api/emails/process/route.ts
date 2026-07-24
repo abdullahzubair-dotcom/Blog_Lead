@@ -156,7 +156,9 @@ export async function POST(req: NextRequest) {
           .from("outreach_emails").select("id, negotiation_status")
           .eq("kind", "initial").eq("ai_managed", true).not("replied_at", "is", null).limit(40);
         for (const it of inits ?? []) {
-          if (["agreed", "declined"].includes((it as any).negotiation_status)) continue;
+          // Never auto-negotiate a thread that's closed OR parked for a human (asked for a doc/call/
+          // redirect/etc.) OR handed off — a person must handle those, not the AI.
+          if (["agreed", "declined", "needs_human", "handoff"].includes((it as any).negotiation_status)) continue;
           const { data: thr } = await supabaseAdmin
             .from("outreach_emails").select("kind, status, replied_at, reply_kind, sent_at")
             .or(`id.eq.${(it as any).id},parent_id.eq.${(it as any).id}`);

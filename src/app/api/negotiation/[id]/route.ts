@@ -23,12 +23,43 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
 }
 
-// POST /api/negotiation/[id] { action: 'send' | 'discard', body? } — send the current draft
-// (optionally an edited body) into the thread, or discard it. Threads via the parent Message-ID.
+// POST /api/negotiation/[id] — act on a thread (anchor id).
+//  { action: 'send' | 'discard', body? }  — send/discard the current draft.
+//  { action: 'assist', assistInput }      — human supplies a link/fact/availability/redirect email
+//                                            (a document is uploaded separately via /asset), then the
+//                                            AI drafts a TRUTHFUL reply; leaves the human-intervention bucket.
+//  { action: 'handoff' }                   — take the thread out of AI management (a person handles it).
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const { action, body: editedBody } = await req.json().catch(() => ({}));
+    const { action, body: editedBody, assistInput: rawAssist } = await req.json().catch(() => ({}));
+
+    // HANDOFF — remove from AI, clear any unsent draft.
+    if (action === "handoff") {
+      await supabaseAdmin.from("outreach_emails").delete().eq("parent_id", id).eq("kind", "negotiation").eq("status", "draft");
+      await supabaseAdmin.from("outreach_emails").update({ negotiation_status: "handoff", ai_managed: false, intervention_at: new Date().toISOString() }).eq("id", id);
+      return NextResponse.json({ ok: true, handoff: true });
+    }
+
+    // ASSIST — the human provided what the AI needed; draft a truthful reply for review.
+    if (action === "assist") {
+      let assistInput = typeof rawAssist === "string" ? rawAssist.trim() : "";
+      const { data: anchor } = await supabaseAdmin.from("outreach_emails")
+        .select("intervention_type, intervention_asset_name").eq("id", id).maybeSingle();
+      const itype = (anchor as any)?.intervention_type;
+      const hasAsset = !!(anchor as any)?.intervention_asset_name;
+      // Redirect: the assist input is the new address — re-target the whole thread to it.
+      if (itype === "redirect" && /\S+@\S+\.\S+/.test(assistInput)) {
+        await supabaseAdmin.from("outreach_emails").update({ recipient_override: assistInput }).or(`id.eq.${id},parent_id.eq.${id}`);
+      }
+      if (!assistInput && hasAsset) assistInput = "The requested document is attached to this email.";
+      if (!assistInput) return NextResponse.json({ error: "Add a link, note, email, or upload a document so the AI can reply truthfully." }, { status: 400 });
+      const { negotiateThread } = await import("@/lib/negotiation/run");
+      const r = await negotiateThread(id, { assistInput, forceDraft: true });
+      if (r.error) return NextResponse.json({ error: r.error }, { status: 500 });
+      return NextResponse.json({ ok: true, draft: r.body ?? "" });
+    }
+
     const { data: draft } = await supabaseAdmin.from("outreach_emails")
       .select("id, body, subject, sender_email, sent_by_email, author_id, recipient_override")
       .eq("parent_id", id).eq("kind", "negotiation").in("status", ["draft", "failed"])
@@ -46,19 +77,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const recipient = ((draft as any).recipient_override && (draft as any).recipient_override.trim())
       || ((mc as any)?.value ?? "").replace(/^mailto:/i, "").trim();
     if (!recipient) return NextResponse.json({ error: "No recipient email on file for this author" }, { status: 400 });
-    const { data: parent } = await supabaseAdmin.from("outreach_emails").select("message_id").eq("id", id).maybeSingle();
+    const { data: parent } = await supabaseAdmin.from("outreach_emails").select("message_id, intervention_asset_name, intervention_asset_mime, intervention_asset_b64").eq("id", id).maybeSingle();
     const parentMsgId = (parent as any)?.message_id ?? undefined;
+    // Attach any human-uploaded document (one-pager etc.) parked on the anchor for this reply.
+    const attachments = (parent as any)?.intervention_asset_b64
+      ? [{ filename: (parent as any).intervention_asset_name || "attachment", content: (parent as any).intervention_asset_b64, encoding: "base64", contentType: (parent as any).intervention_asset_mime || undefined }]
+      : undefined;
 
     const res = await deliverOutreach({
       to: recipient, subject: (draft as any).subject ?? "(no subject)", body: bodyToSend,
       sender: (draft as any).sender_email, sentBy: (draft as any).sent_by_email,
-      inReplyTo: parentMsgId, references: parentMsgId,
+      inReplyTo: parentMsgId, references: parentMsgId, attachments,
     });
     if (!res.ok) {
       await supabaseAdmin.from("outreach_emails").update({ status: "failed", error: res.error, body: bodyToSend }).eq("id", (draft as any).id);
       return NextResponse.json({ error: res.error ?? "send failed" }, { status: 500 });
     }
     await supabaseAdmin.from("outreach_emails").update({ status: "sent", sent_at: new Date().toISOString(), message_id: res.messageId ?? null, error: null, body: bodyToSend }).eq("id", (draft as any).id);
+    // The attachment has now gone out once — clear it so a later reply doesn't re-attach it.
+    if (attachments) await supabaseAdmin.from("outreach_emails").update({ intervention_asset_name: null, intervention_asset_mime: null, intervention_asset_b64: null }).eq("id", id);
     return NextResponse.json({ ok: true, sent: true, to: recipient });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "failed" }, { status: 500 });

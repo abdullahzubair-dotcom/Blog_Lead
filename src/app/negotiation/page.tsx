@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play, Mail } from "lucide-react";
+import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play, Mail, Paperclip, UserRound } from "lucide-react";
 import { toast } from "sonner";
 
 interface Thread {
@@ -21,6 +21,9 @@ interface Thread {
   aiManaged: boolean; subject: string; replyExcerpt: string | null;
   draftStatus: string | null; draftBody: string | null;
   repliedAt: string | null; sentAt: string | null; bouncedAt: string | null; sender: string | null;
+  replyFrom: string | null;
+  interventionType: string | null; interventionReason: string | null; interventionAsk: string | null;
+  interventionAssistInput: string | null; interventionAssetName: string | null;
 }
 interface Msg { from: "us" | "them"; body: string; at: string | null }
 
@@ -32,12 +35,26 @@ function fmtDate(iso?: string | null): string {
 const CATS = [
   { key: "queued", label: "Queued" },
   { key: "needs_reply", label: "Needs reply" },
+  { key: "needs_human", label: "Human intervention" },
   { key: "negotiating", label: "Negotiating" },
   { key: "agreed", label: "Agreed" },
   { key: "hard_no", label: "Hard no" },
   { key: "automated", label: "Automated" },
   { key: "bounced", label: "Bounced" },
 ];
+
+// What to ask the human for on the Assist path, per intervention type.
+const ASSIST_FIELD: Record<string, { label: string; placeholder: string; kind: "text" | "url" | "email"; allowUpload?: boolean }> = {
+  asset_request: { label: "Paste a link to the document, or upload it below", placeholder: "https://link-to-your-one-pager.pdf", kind: "url", allowUpload: true },
+  identity_verification: { label: "Website / LinkedIn / registration or references", placeholder: "https://imagine.art  ·  linkedin.com/in/...", kind: "text" },
+  scheduling: { label: "Your availability (with timezone) or a booking link", placeholder: "Tue/Wed 2-5pm PT, or https://cal.com/you", kind: "text" },
+  redirect: { label: "Correct contact email to redirect this thread to", placeholder: "editor@publication.com", kind: "email" },
+  payment_details: { label: "Invoice link / PO / billing detail to send", placeholder: "https://invoice-link  or  PO #12345", kind: "text", allowUpload: true },
+  factual_question: { label: "The factual answer to send (in your words)", placeholder: "do-follow, permanent, ~5 day turnaround", kind: "text" },
+  over_policy: { label: "Approved terms / higher budget, or a note", placeholder: "OK up to $600, no retainer", kind: "text" },
+  other: { label: "What should the AI say? (or upload a document)", placeholder: "Provide the info the AI should include", kind: "text", allowUpload: true },
+};
+function assistField(type: string | null) { return ASSIST_FIELD[type ?? "other"] ?? ASSIST_FIELD.other; }
 const SENTIMENT: Record<string, string> = {
   positive: "text-green-500 border-green-500/40 bg-green-500/10",
   negative: "text-red-500 border-red-500/40 bg-red-500/10",
@@ -60,6 +77,8 @@ export default function NegotiationPage() {
   const [convo, setConvo] = useState<Record<string, Msg[]>>({});
   const [editBody, setEditBody] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState(false);
+  const [assistText, setAssistText] = useState<Record<string, string>>({}); // per-thread assist input
+  const [assetName, setAssetName] = useState<Record<string, string>>({});    // staged upload filename
 
   const load = useCallback(async () => {
     try {
@@ -151,6 +170,43 @@ export default function NegotiationPage() {
     } catch { toast.error("Process failed"); } finally { setProcessing(false); }
   };
 
+  // Human intervention — Assist: send the human-provided input (+ any uploaded doc), get a truthful
+  // draft back, and drop it into the editable draft box for review/send.
+  const assist = async (t: Thread) => {
+    setBusy(t.id);
+    try {
+      const r = await fetch(`/api/negotiation/${t.id}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assist", assistInput: assistText[t.id] ?? "" }),
+      }).then((x) => x.json());
+      if (r.error) { toast.error(r.error); return; }
+      // Force the conversation to refetch and show the new truthful draft for review.
+      setConvo((c) => { const n = { ...c }; delete n[t.id]; return n; });
+      if (r.draft) setEditBody((e) => ({ ...e, [t.id]: r.draft }));
+      toast.success("Draft ready, review and send below.");
+    } catch (e: any) { toast.error(e?.message ?? "failed"); } finally { setBusy(null); }
+  };
+
+  // Human intervention — Handoff: take the thread out of AI management (a person handles it).
+  const handoff = async (t: Thread) => {
+    setBusy(t.id);
+    try {
+      const r = await fetch(`/api/negotiation/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "handoff" }) }).then((x) => x.json());
+      if (r.error) toast.error(r.error);
+      else { toast.success("Handed off, removed from AI. Reply from your own inbox."); setOpen(null); load(); }
+    } catch (e: any) { toast.error(e?.message ?? "failed"); } finally { setBusy(null); }
+  };
+
+  const uploadAsset = async (t: Thread, file: File) => {
+    setBusy(t.id);
+    try {
+      const fd = new FormData(); fd.append("file", file);
+      const r = await fetch(`/api/negotiation/${t.id}/asset`, { method: "POST", body: fd }).then((x) => x.json());
+      if (r.error) toast.error(r.error);
+      else { setAssetName((s) => ({ ...s, [t.id]: r.name })); toast.success(`Attached ${r.name}`); }
+    } catch (e: any) { toast.error(e?.message ?? "upload failed"); } finally { setBusy(null); }
+  };
+
   const sendOrDiscard = async (t: Thread, action: "send" | "discard") => {
     setBusy(t.id);
     try {
@@ -210,7 +266,54 @@ export default function NegotiationPage() {
               </div>
             ))}
           </div>
-          {t.draftStatus === "sent" ? (
+          {t.category === "needs_human" ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
+                  <span className="text-[11px] uppercase tracking-wide text-amber-400">Needs a human{t.interventionType ? ` · ${t.interventionType.replace(/_/g, " ")}` : ""}</span>
+                </div>
+                {t.interventionAsk && <p className="text-sm"><span className="text-muted-foreground">They asked: </span>{t.interventionAsk}</p>}
+                {t.interventionReason && <p className="text-xs text-muted-foreground">{t.interventionReason}</p>}
+              </div>
+              {editBody[t.id] !== undefined ? (
+                <div className="space-y-2">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">AI draft reply (truthful, edit before sending)</p>
+                  <Textarea rows={7} value={editBody[t.id]} onChange={(e) => setEditBody((s) => ({ ...s, [t.id]: e.target.value }))} className="text-sm" />
+                  <div className="flex gap-2">
+                    <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" disabled={busy === t.id} onClick={() => sendOrDiscard(t, "send")}><Send className="h-4 w-4 mr-1" />Send reply{t.interventionAssetName ? " + doc" : ""}</Button>
+                    <Button size="sm" variant="ghost" disabled={busy === t.id} onClick={() => setEditBody((s) => { const n = { ...s }; delete n[t.id]; return n; })}>Back</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Give the AI what it needs, then it replies</p>
+                  <label className="text-xs text-muted-foreground block">{assistField(t.interventionType).label}</label>
+                  <input
+                    type={assistField(t.interventionType).kind}
+                    placeholder={assistField(t.interventionType).placeholder}
+                    value={assistText[t.id] ?? (t.interventionAssistInput ?? "")}
+                    onChange={(e) => setAssistText((s) => ({ ...s, [t.id]: e.target.value }))}
+                    className="w-full h-9 rounded-md border border-input bg-background px-2.5 text-sm"
+                  />
+                  {assistField(t.interventionType).allowUpload && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label className="text-xs cursor-pointer inline-flex items-center gap-1.5 rounded-md border border-input px-2.5 py-1.5 hover:bg-muted/40">
+                        <Paperclip className="h-3.5 w-3.5" />{(assetName[t.id] || t.interventionAssetName) ? "Replace document" : "Upload document"}
+                        <input type="file" className="hidden" disabled={busy === t.id} onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadAsset(t, f); }} />
+                      </label>
+                      {(assetName[t.id] || t.interventionAssetName) && <span className="text-xs text-green-400">{assetName[t.id] || t.interventionAssetName} attached</span>}
+                    </div>
+                  )}
+                  <div className="flex gap-2 pt-1 flex-wrap">
+                    <Button size="sm" disabled={busy === t.id} onClick={() => assist(t)}>{busy === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Sparkles className="h-4 w-4 mr-1" />Assist &amp; draft reply</>}</Button>
+                    <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => handoff(t)}><UserRound className="h-4 w-4 mr-1" />I&apos;ll handle it</Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground pt-1">&ldquo;I&apos;ll handle it&rdquo; removes this thread from the AI so you can reply from your own inbox.</p>
+                </div>
+              )}
+            </div>
+          ) : t.draftStatus === "sent" ? (
             <p className="text-[11px] uppercase tracking-wide text-green-400 flex items-center gap-1.5"><Send className="h-3 w-3" />AI reply sent, shown above in the conversation</p>
           ) : editBody[t.id] !== undefined ? (
             <div className="space-y-2">
