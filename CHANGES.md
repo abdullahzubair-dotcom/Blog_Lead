@@ -84,6 +84,25 @@ teammate** = how many threads that sender has **in the current tab** (e.g. how m
 each person has). Implemented via the `hint` field on `SearchableSelect` options (no component
 change needed — it already renders `hint`). Count is `threads.filter(category===tab && sender===s).length`.
 
+## 7. Author names — clean scraped bylines + reject title phrases
+
+- **Symptom:** author names stored as junk — `Alistair CampbellSocial Links Navigation`,
+  `By Pierre DeBois`, `Consultant and Applied scientist`, `Author:Lili Marocsik`.
+- **Fix (`src/lib/enrich/personFilter.ts`):** new `cleanAuthorName()` strips leading
+  `By/Written by/Author:`, trailing scraper nav-junk (`…Social Links Navigation`, `Continue
+  Reading`, …), a role word fused onto the surname (`CaiContributor` → `Cai`), and collapses
+  whitespace. `isLikelyPersonName()` now cleans first, **rejects title phrases** (a real name never
+  contains ` and / of / the / at / with `), and adds job-title words that slipped through
+  (`scientist, consultant, analyst, writer, reporter, …`). Applied in `pipeline/run.ts` and
+  `pipeline/authorSeed.ts` so stored names are clean going forward.
+- **One-time cleanup:** apply `cleanAuthorName` to existing `authors.full_name` (script skips rows
+  whose cleaned name would collide with an existing author on the same domain — those are duplicate
+  authors, `authors_full_name_primary_domain_id_key`; merge later if you care). On this DB ~81 rows
+  were cleaned.
+- **⚠️ Can't recover:** pure role/org names with no person in the byline (`Consultant and Applied
+  scientist`, `CNET Editorial`) have no real name in the DB to restore — the cleaner leaves them, but
+  they're now excluded from person-only paths (enrich/send).
+
 ## 5. Manual checks after porting
 1. Run migration 041.
 2. `npx tsc --noEmit && npm run build`.
