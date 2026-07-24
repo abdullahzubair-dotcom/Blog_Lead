@@ -247,6 +247,10 @@ export default function InboxPage() {
                 <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                   {p.success_at && <Trophy className="h-3 w-3 text-amber-400" />}
                   {p.category === "replied" && <Sentiment s={p.reply_sentiment} />}
+                  {p.ai_managed && [null, "negotiating"].includes(p.negotiation_status) && (
+                    <span className="text-[10px] text-violet-300 border border-violet-500/40 bg-violet-500/10 rounded px-1 inline-flex items-center gap-1" title="The AI negotiator is handling this thread — don't reply here."><Bot className="h-3 w-3" />AI</span>
+                  )}
+                  {p.needs_reply && <span className="text-[10px] text-amber-300 border border-amber-500/40 bg-amber-500/10 rounded px-1">needs reply</span>}
                   {p.bounced_at && <span className="text-[10px] text-red-400 border border-red-500/40 rounded px-1 inline-flex items-center gap-1"><Ban className="h-3 w-3" />bounced</span>}
                   {p.reply_kind === "auto" && !p.bounced_at && <span className="text-[10px] text-muted-foreground border border-border rounded px-1">auto-reply</span>}
                 </div>
@@ -274,6 +278,7 @@ export default function InboxPage() {
                 <p className="text-xs text-muted-foreground truncate">{selected.recipient}{account ? ` · via ${selected.sender_label ?? account}` : ""}</p>
               </div>
               <div className="ml-auto flex items-center gap-2">
+                {aiLocked && <span className="text-[11px] text-violet-300 border border-violet-500/40 bg-violet-500/10 rounded px-1.5 py-0.5 inline-flex items-center gap-1" title="The AI negotiator is handling this thread — don't reply here."><Bot className="h-3.5 w-3.5" />AI negotiating</span>}
                 {selected.category === "replied" && <Sentiment s={selected.reply_sentiment} />}
                 <Button size="sm" variant="outline" className="h-8" onClick={() => openAuthor(selected.author_id)}>View profile</Button>
                 <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={(e) => dismiss(selected, !selected.dismissed, e)}>{selected.dismissed ? <><ArchiveRestore className="h-3.5 w-3.5" />Restore</> : <><Archive className="h-3.5 w-3.5" />Dismiss</>}</Button>

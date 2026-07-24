@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getInboxTarget, getUserAppPasswordEnc, markInboxSeen, resolveInboxAccount } from "@/lib/db/queries";
+import { getInboxTarget, getUserAppPasswordEnc, markInboxSeen, markInboxReplied, resolveInboxAccount } from "@/lib/db/queries";
 import { decryptSecret } from "@/lib/crypto";
 import { fetchConversation } from "@/lib/email/inbox";
 import { auth } from "@auth";
@@ -27,6 +27,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     const messages = await fetchConversation(account, pass, target.recipient);
+    // Self-heal "Needs your reply": if the real last outbound in the thread is ours, record it so a
+    // thread we already answered (incl. before reply-tracking existed) stops showing as needing one.
+    const lastOut = messages.filter((m: any) => m.direction === "outbound").map((m: any) => m.date).filter(Boolean).sort().pop();
+    if (lastOut) await markInboxReplied(account, id, lastOut).catch(() => {});
     return NextResponse.json({ target: { ...target, account }, messages });
   } catch (e: any) {
     return NextResponse.json({ error: `Couldn't read the mailbox: ${e?.message ?? "IMAP error"}`, target: { ...target, account }, messages: [] }, { status: 200 });

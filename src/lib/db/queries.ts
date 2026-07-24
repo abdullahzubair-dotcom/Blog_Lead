@@ -2363,11 +2363,11 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
 
   // Per-user read/dismiss state for these authors.
   const authorIds = [...byAuthor.keys()];
-  const stateByAuthor = new Map<string, { last_seen_at: string | null; dismissed: boolean }>();
+  const stateByAuthor = new Map<string, { last_seen_at: string | null; dismissed: boolean; last_reply_at: string | null }>();
   if (authorIds.length) {
     const { data: st } = await supabaseAdmin
-      .from("inbox_state").select("author_id, last_seen_at, dismissed").eq("user_email", userEmail).in("author_id", authorIds);
-    for (const s of st ?? []) stateByAuthor.set(s.author_id, { last_seen_at: s.last_seen_at, dismissed: !!s.dismissed });
+      .from("inbox_state").select("author_id, last_seen_at, dismissed, last_reply_at").eq("user_email", userEmail).in("author_id", authorIds);
+    for (const s of st ?? []) stateByAuthor.set(s.author_id, { last_seen_at: s.last_seen_at, dismissed: !!s.dismissed, last_reply_at: (s as any).last_reply_at ?? null });
   }
 
   // Which threads have we already answered since their reply? (a negotiation reply sent after
@@ -2389,7 +2389,11 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
     const state = stateByAuthor.get(author_id);
     const unread = !!r.replied_at && (!state?.last_seen_at || r.replied_at > state.last_seen_at);
     const negStatus = (r.negotiation_status as string | null) ?? null;
-    const answeredAt = lastAnswerByAuthor.get(author_id);
+    // "Answered since" = the latest of: an AI negotiation reply sent (kind='negotiation'), OR a
+    // MANUAL inbox reply we recorded (inbox_state.last_reply_at — manual replies aren't
+    // outreach_emails rows, so without this every hand-answered thread wrongly showed needs_reply).
+    const answers = [lastAnswerByAuthor.get(author_id), state?.last_reply_at].filter(Boolean) as string[];
+    const answeredAt = answers.sort().pop() ?? null;
     // A genuine (non-auto) reply that nobody has answered since, and the thread isn't closed/handed off.
     const needs_reply = category === "replied" && r.reply_kind !== "auto"
       && !["agreed", "declined", "handoff"].includes(negStatus ?? "")
@@ -2413,6 +2417,16 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
 export async function markInboxSeen(userEmail: string, authorId: string): Promise<void> {
   await supabaseAdmin.from("inbox_state").upsert(
     { user_email: userEmail, author_id: authorId, last_seen_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: "user_email,author_id" },
+  );
+}
+
+// Record that WE replied to this person from the inbox (manual reply). Used by the "Needs your
+// reply" section so a hand-answered thread stops showing up. `at` lets the thread view backfill
+// from the real last-outbound IMAP date (self-heal for replies sent before this was tracked).
+export async function markInboxReplied(userEmail: string, authorId: string, at?: string): Promise<void> {
+  await supabaseAdmin.from("inbox_state").upsert(
+    { user_email: userEmail, author_id: authorId, last_reply_at: at ?? new Date().toISOString(), updated_at: new Date().toISOString() },
     { onConflict: "user_email,author_id" },
   );
 }

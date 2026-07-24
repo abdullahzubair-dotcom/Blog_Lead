@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getInboxTarget, getUserEmailConfig, getUserAppPasswordEnc, resolveInboxAccount } from "@/lib/db/queries";
+import { getInboxTarget, getUserEmailConfig, getUserAppPasswordEnc, resolveInboxAccount, markInboxReplied } from "@/lib/db/queries";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { decryptSecret } from "@/lib/crypto";
 import { sendEmailAs, type MailAttachment } from "@/lib/email/smtp";
@@ -60,6 +60,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const cfg = await getUserEmailConfig(account);
     const res = await sendEmailAs({ user: account, pass, fromName: cfg.from_name, to: recipient, subject, body: text, inReplyTo: inReplyToFmt, references: inReplyToFmt, attachments });
     if (!res.ok) return NextResponse.json({ error: res.error ?? "Send failed" }, { status: 500 });
+    // Record our reply so this thread leaves the "Needs your reply" section.
+    await markInboxReplied(account, id).catch(() => {});
     return NextResponse.json({ ok: true, messageId: res.messageId, from: account, to: recipient, subject });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Send failed" }, { status: 500 });
