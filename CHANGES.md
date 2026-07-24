@@ -103,8 +103,27 @@ change needed — it already renders `hint`). Count is `threads.filter(category=
   scientist`, `CNET Editorial`) have no real name in the DB to restore — the cleaner leaves them, but
   they're now excluded from person-only paths (enrich/send).
 
+## 8. Negotiation — who-did-what audit log
+
+- **Why:** the Negotiation page is a **shared** view (every teammate sees every thread), so you need
+  attribution — a record of who drafted / sent / assisted / handed off / discarded each thread, plus
+  the AI's own auto-sends.
+- **Migration `scripts/042_negotiation_activity.mjs`:** new `negotiation_activity` table
+  (`anchor_id`, `actor`, `action`, `detail`, `created_at`).
+- **Logging (`logNegotiationActivity` in `queries.ts`, best-effort):**
+  - User actions logged at the API routes (they have the session): `POST /api/negotiation/[id]`
+    (`send` / `assist` / `handoff` / `discard`) and `POST /api/negotiation/draft` (`draft` / `send`).
+    Both routes now call `auth()` for the actor email.
+  - **AI autonomy** auto-sends are logged from the cron loop (`process/route.ts`) as actor
+    `ai-autonomy` — NOT inside `run.ts` (which is shared with the user-initiated draft route; logging
+    there would double-count).
+- **Surface:** `GET /api/negotiation/[id]` returns `activity`; the thread's expand panel shows an
+  **Activity log** ("waleed.idrees… sent a reply · Jul 24", "AI (autonomy) auto-sent… ", etc.).
+- **⚠️ Don't reintroduce:** log user actions at the route layer (where the session is), and AI sends
+  only at the loop — don't add a log call inside `run.ts` or manual+auto sends double-count.
+
 ## 5. Manual checks after porting
-1. Run migration 041.
+1. Run migration 041 (and 042 if porting the audit log).
 2. `npx tsc --noEmit && npm run build`.
 3. Open a thread you've already replied to from the inbox → it disappears from **Needs your reply**
    (self-heal on open); reply to a fresh reply → it leaves the tab immediately.

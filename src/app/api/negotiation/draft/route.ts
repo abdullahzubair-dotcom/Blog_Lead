@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { negotiateThread } from "@/lib/negotiation/run";
+import { logNegotiationActivity } from "@/lib/db/queries";
+import { auth } from "@auth";
 
 export const maxDuration = 60;
 
@@ -12,6 +14,8 @@ export async function POST(req: NextRequest) {
   try {
     const r = await negotiateThread(emailId, { forceDraft: send === false });
     if (!r.ok) return NextResponse.json({ error: r.error ?? "draft failed" }, { status: r.error === "email not found" ? 404 : 400 });
+    const me = (await auth().catch(() => null))?.user?.email || "unknown";
+    await logNegotiationActivity(emailId, me, r.sent ? "send" : "draft", r.persistedAs === "needs_human" ? "reply needs a human, routed to intervention" : (r.sent ? "generated and sent an AI reply" : "generated an AI draft"));
     return NextResponse.json({
       ok: true, draftId: r.draftId, body: r.body, classification: { intent: r.intent },
       ceiling: r.ceiling, suggestedOffer: r.suggestedOffer, statusHint: r.statusHint,

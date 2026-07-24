@@ -27,6 +27,7 @@ interface Thread {
   interventionAssistInput: string | null; interventionAssetName: string | null;
 }
 interface Msg { from: "us" | "them"; body: string; at: string | null }
+interface Act { actor: string; action: string; detail: string | null; created_at: string }
 
 function fmtDate(iso?: string | null): string {
   if (!iso) return "";
@@ -76,6 +77,7 @@ export default function NegotiationPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [collapsedSenders, setCollapsedSenders] = useState<Set<string>>(new Set());
   const [convo, setConvo] = useState<Record<string, Msg[]>>({});
+  const [activity, setActivity] = useState<Record<string, Act[]>>({}); // who-did-what audit per thread
   const [editBody, setEditBody] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState(false);
   const [senderFilter, setSenderFilter] = useState(""); // "" = all senders; else filter to one sending account
@@ -125,8 +127,9 @@ export default function NegotiationPage() {
     if (open === t.id) { setOpen(null); return; }
     setOpen(t.id);
     if (!convo[t.id]) {
-      const d = await fetch(`/api/negotiation/${t.id}`).then((r) => r.json()).catch(() => ({ conversation: [], draft: null }));
+      const d = await fetch(`/api/negotiation/${t.id}`).then((r) => r.json()).catch(() => ({ conversation: [], draft: null, activity: [] }));
       setConvo((c) => ({ ...c, [t.id]: d.conversation ?? [] }));
+      setActivity((a) => ({ ...a, [t.id]: d.activity ?? [] }));
       if (d.draft?.body && editBody[t.id] === undefined) setEditBody((e) => ({ ...e, [t.id]: d.draft.body }));
     }
     if (t.draftBody && editBody[t.id] === undefined) setEditBody((e) => ({ ...e, [t.id]: t.draftBody as string }));
@@ -338,6 +341,19 @@ export default function NegotiationPage() {
           ) : (t.category === "needs_reply" || t.category === "negotiating") ? (
             <Button size="sm" variant="outline" disabled={busy === t.id} onClick={() => draft(t)}><Sparkles className="h-4 w-4 mr-1.5" />Draft AI reply</Button>
           ) : null}
+          {(activity[t.id]?.length ?? 0) > 0 && (
+            <div className="pt-2 border-t border-border/50">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Activity log</p>
+              <div className="space-y-0.5">
+                {activity[t.id].map((a, i) => (
+                  <p key={i} className="text-[11px] text-muted-foreground">
+                    <span className={a.actor === "ai-autonomy" ? "text-violet-400 font-medium" : "text-foreground font-medium"}>{a.actor === "ai-autonomy" ? "AI (autonomy)" : a.actor}</span>{" "}
+                    {a.detail || a.action} · {fmtDate(a.created_at)}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

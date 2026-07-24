@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, addressHasOtherSentInitial } from "@/lib/db/queries";
+import { getDueEmails, updateOutreachEmail, getUserEmailConfig, getUserAppPasswordEnc, getFollowupParent, addressHasOtherSentInitial, logNegotiationActivity } from "@/lib/db/queries";
 import { isRoleEmail } from "@/lib/email/roleEmail";
 import { supabaseAdmin } from "@/lib/db/supabase";
 import { sendEmail, sendEmailAs } from "@/lib/email/smtp";
@@ -183,7 +183,8 @@ export async function POST(req: NextRequest) {
           if (lastAnswer && lastAnswer >= latestReply) continue; // their latest reply already answered
           negotiations.attempted++;
           const r = await negotiateThread((it as any).id).catch((e: any) => { negotiations.errors.push(e?.message ?? "negotiate error"); return null; });
-          if (r?.sent) negotiations.sent++; else if (r?.ok) negotiations.drafted++;
+          if (r?.sent) { negotiations.sent++; await logNegotiationActivity((it as any).id, "ai-autonomy", "send", "AI auto-sent a negotiation reply"); }
+          else if (r?.ok) negotiations.drafted++;
         }
       }
     } catch (e: any) { negotiations.errors.push(e?.message ?? "auto-negotiation error"); }

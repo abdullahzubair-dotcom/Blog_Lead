@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/db/supabase";
-import { getConversation } from "@/lib/db/queries";
+import { getConversation, getNegotiationActivity, logNegotiationActivity } from "@/lib/db/queries";
 import { deliverOutreach } from "@/lib/email/deliver";
+import { auth } from "@auth";
 
 export const maxDuration = 60;
 
@@ -10,14 +11,15 @@ export const maxDuration = 60;
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const [conversation, { data: draftRow }] = await Promise.all([
+    const [conversation, { data: draftRow }, activity] = await Promise.all([
       getConversation(id),
       supabaseAdmin.from("outreach_emails")
         .select("id, body, status, subject, created_at").eq("parent_id", id).eq("kind", "negotiation")
         .in("status", ["draft", "failed"]) // only an actionable (unsent) draft; a sent reply is history, not a draft
         .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      getNegotiationActivity(id),
     ]);
-    return NextResponse.json({ conversation, draft: draftRow ?? null });
+    return NextResponse.json({ conversation, draft: draftRow ?? null, activity });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message }, { status: 500 });
   }
@@ -33,11 +35,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   try {
     const { action, body: editedBody, assistInput: rawAssist } = await req.json().catch(() => ({}));
+    const session = await auth().catch(() => null);
+    const me = (session?.user?.email as string | undefined) || "unknown";
 
     // HANDOFF — remove from AI, clear any unsent draft.
     if (action === "handoff") {
       await supabaseAdmin.from("outreach_emails").delete().eq("parent_id", id).eq("kind", "negotiation").eq("status", "draft");
       await supabaseAdmin.from("outreach_emails").update({ negotiation_status: "handoff", ai_managed: false, intervention_at: new Date().toISOString() }).eq("id", id);
+      await logNegotiationActivity(id, me, "handoff", "took the thread out of AI management");
       return NextResponse.json({ ok: true, handoff: true });
     }
 
@@ -57,6 +62,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const { negotiateThread } = await import("@/lib/negotiation/run");
       const r = await negotiateThread(id, { assistInput, forceDraft: true });
       if (r.error) return NextResponse.json({ error: r.error }, { status: 500 });
+      await logNegotiationActivity(id, me, "assist", `provided info${hasAsset ? " + document" : ""}, AI drafted a reply`);
       return NextResponse.json({ ok: true, draft: r.body ?? "" });
     }
 
@@ -68,6 +74,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
     if (action === "discard") {
       await supabaseAdmin.from("outreach_emails").delete().eq("id", (draft as any).id);
+      await logNegotiationActivity(id, me, "discard", "discarded the AI draft");
       return NextResponse.json({ ok: true, discarded: true });
     }
     if (action !== "send") return NextResponse.json({ error: "bad action" }, { status: 400 });
@@ -96,6 +103,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await supabaseAdmin.from("outreach_emails").update({ status: "sent", sent_at: new Date().toISOString(), message_id: res.messageId ?? null, error: null, body: bodyToSend }).eq("id", (draft as any).id);
     // The attachment has now gone out once — clear it so a later reply doesn't re-attach it.
     if (attachments) await supabaseAdmin.from("outreach_emails").update({ intervention_asset_name: null, intervention_asset_mime: null, intervention_asset_b64: null }).eq("id", id);
+    await logNegotiationActivity(id, me, "send", `sent a reply to ${recipient}${attachments ? " (with attachment)" : ""}`);
     return NextResponse.json({ ok: true, sent: true, to: recipient });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "failed" }, { status: 500 });

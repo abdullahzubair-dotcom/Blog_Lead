@@ -1575,6 +1575,20 @@ export async function getOutstandingSentForReplyCheck(days = 30, opts: { include
 // pending follow-ups). If the anchor already carries the same reply excerpt, it does nothing
 // and returns false — so re-seeing the same message on a later IMAP sweep never bumps
 // replied_at (which would wrongly re-trigger auto-negotiation).
+// ─── Negotiation activity (who-did-what audit log on the shared Negotiation page) ──────────────
+export async function logNegotiationActivity(anchorId: string, actor: string, action: string, detail?: string, authorId?: string | null): Promise<void> {
+  try {
+    await supabaseAdmin.from("negotiation_activity").insert({ anchor_id: anchorId, actor: actor || "unknown", action, detail: detail ?? null, author_id: authorId ?? null });
+  } catch { /* best-effort — never block the action on the audit write */ }
+}
+
+export async function getNegotiationActivity(anchorId: string, limit = 30): Promise<Array<{ actor: string; action: string; detail: string | null; created_at: string }>> {
+  const { data } = await supabaseAdmin
+    .from("negotiation_activity").select("actor, action, detail, created_at")
+    .eq("anchor_id", anchorId).order("created_at", { ascending: false }).limit(limit);
+  return (data ?? []) as any;
+}
+
 export async function recordReplyOnAnchor(
   anchorId: string,
   meta: { reply_kind?: string | null; reply_from?: string | null; reply_subject?: string | null; reply_excerpt?: string | null; reply_sentiment?: string | null },
