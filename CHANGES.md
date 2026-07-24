@@ -54,6 +54,7 @@ A `kind='negotiation'` row with `status='sent'` is intentionally kept as history
 - `ReplyIntent` gains `"needs_human"`; new `InterventionType` union (13 labels). `ReplyClassification` gains `interventionType`, `interventionAsk`, `assistable`.
 - `classifyReplyIntent`'s LLM prompt adds the `needs_human` label + definition and returns `interventionType`/`interventionAsk`/`assistable`. The label is described broadly so the model maps **any** real-world ask to the closest type (`other` is the adaptive catch-all) — it is not a fixed checklist.
 - Deterministic fallback `classifyInterventionHeuristic(text)` (priority-ordered regex map) sets `needs_human` when there's no LLM, checked **before** the generic price/question defaults.
+- **Deterministic STRONG-cue override**: even when the LLM labels a reply positively (e.g. "happy to jump on a call" → `interested`), unambiguous "AI literally can't do this" cues (`sync_contact`, `other_channel`, `legal_contract`, `process_portal`, `payment_details`, `inbound_attachment`) force `needs_human`. The softer types stay LLM-driven to avoid false positives.
 
 ### 3b. Never fabricate (`agent.ts`)
 - Removed the canned "I will get the assets and a short blurb over to you shortly" accept templates → now promise only a text blurb.
@@ -85,6 +86,10 @@ The auto-negotiation selection skips `negotiation_status in ('agreed','declined'
 ### 3g. Threads API + UI (`src/app/api/negotiation/threads/route.ts`, `src/app/negotiation/page.tsx`)
 - Threads route selects the intervention fields + `reply_from`; new `needs_human` bucket branch checked **before** `automated` (so an OOO-with-alt-contact lands in Human intervention).
 - Page: new **Human intervention** tab; per-thread panel shows *what they asked* + *why a human is needed* + type badge, then either **Assist** (type-aware input — URL / text / email / availability, plus a **document upload** for asset/payment/other) → truthful draft to review + send, or **Handoff**. Attachment indicator on the Send button.
+- **Sent-from filter**: a searchable dropdown (`SearchableSelect`, same component as "add prospect") of the distinct sending accounts filters the list to threads sent from a chosen teammate (applies on every tab, incl. Human intervention). `senderFilter` state; shows only when >1 sender is present.
+
+### 3h. One-time reclassification of existing threads
+New replies are auto-classified going forward. To move threads that ALREADY arrived before this shipped, run the real classifier over active replied threads and flag the `needs_human` ones. On this repo's DB that moved 3 (asset request, call, inbound attachment). A reusable scan is: for each active `kind='initial'` (status not agreed/declined/needs_human/handoff/bounced) take the latest `reply_kind='reply'` excerpt in the thread, call `classifyReplyIntent`, and if `needs_human` set `negotiation_status='needs_human'` + `intervention_type/ask/reason/at` on the anchor. Run it once on the fork's DB after porting.
 
 ---
 

@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Loader2, Bot, BookOpen, Sparkles, RefreshCw, ShieldAlert, ChevronDown, ChevronRight, Send, Trash2, Play, Mail, Paperclip, UserRound } from "lucide-react";
 import { toast } from "sonner";
 
@@ -77,6 +78,7 @@ export default function NegotiationPage() {
   const [convo, setConvo] = useState<Record<string, Msg[]>>({});
   const [editBody, setEditBody] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState(false);
+  const [senderFilter, setSenderFilter] = useState(""); // "" = all senders; else filter to one sending account
   const [assistText, setAssistText] = useState<Record<string, string>>({}); // per-thread assist input
   const [assetName, setAssetName] = useState<Record<string, string>>({});    // staged upload filename
 
@@ -88,7 +90,9 @@ export default function NegotiationPage() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const rows = threads.filter((t) => t.category === tab);
+  const rows = threads.filter((t) => t.category === tab && (!senderFilter || t.sender === senderFilter));
+  // Distinct sending accounts across all threads — powers the "sent from" searchable filter.
+  const senderOptions = [...new Set(threads.map((t) => t.sender).filter(Boolean))].sort().map((s) => ({ id: s as string, label: s as string }));
   const dateOf = (t: Thread) => t.repliedAt ?? t.bouncedAt ?? t.sentAt ?? null;
   // Group the current tab's threads by the account they were sent from (mirrors the Sending page),
   // newest activity first within each account and across accounts.
@@ -362,9 +366,21 @@ export default function NegotiationPage() {
       </div>
 
       <div className="flex items-center justify-between gap-3 min-h-9">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={selectAllVisible} disabled={rows.length === 0}>Select all ({rows.length})</Button>
           {sel.size > 0 && <Button variant="ghost" size="sm" onClick={clearSel}>Clear ({sel.size})</Button>}
+          {senderOptions.length > 1 && (
+            <SearchableSelect
+              value={senderFilter}
+              onChange={setSenderFilter}
+              options={senderOptions}
+              noneLabel="All senders"
+              placeholder="All senders"
+              searchPlaceholder="Search sender…"
+              className="w-56"
+              menuWidth="w-72"
+            />
+          )}
         </div>
         {sel.size > 0 && (
           <div className="flex items-center gap-2">

@@ -96,6 +96,15 @@ Reply:
           base.interventionType = IT.includes(j.interventionType) ? j.interventionType : "other";
           base.interventionAsk = String(j.interventionAsk ?? "").slice(0, 140) || "asked for something the AI cannot do";
           base.assistable = j.assistable !== false; // default assistable unless the model says otherwise
+          return base;
+        }
+        // Deterministic override: the LLM sometimes labels a reply positively ("interested") even
+        // when it contains an unambiguous "AI literally cannot do this" cue (a call, WhatsApp, an
+        // NDA, a portal signup, an invoice, an attachment they sent). Force needs_human for those.
+        if (["interested", "question", "counter_offer", "accept"].includes(intent)) {
+          const hh = classifyInterventionHeuristic(text.toLowerCase());
+          const STRONG = new Set<InterventionType>(["sync_contact", "other_channel", "legal_contract", "process_portal", "payment_details", "inbound_attachment"]);
+          if (hh && STRONG.has(hh.type)) return { intent: "needs_human", priceMentioned: price, reason: `cue: ${hh.type}`, interventionType: hh.type, interventionAsk: hh.ask, assistable: hh.assistable };
         }
         return base;
       } catch { /* fall through */ }
