@@ -20,7 +20,7 @@ import { SEED_DOMAINS } from "@config/seeds";
 import { fetchPage, closeSharedBrowser } from "@/lib/extract/fetch";
 import { BlitzDomainCache } from "@/lib/enrich/blitz";
 import { resolveEmail, anyEnricherEnabled } from "@/lib/enrich/resolve";
-import { isLikelyPersonName } from "@/lib/enrich/personFilter";
+import { isLikelyPersonName, cleanAuthorName } from "@/lib/enrich/personFilter";
 import { isBlockedUrl } from "@/lib/util/url";
 import { extractMetadata } from "@/lib/extract/metadata";
 import { extractReadability } from "@/lib/extract/readability";
@@ -735,9 +735,9 @@ export async function processHit(hitId: string, url: string, source: string, see
     );
   }
 
-  const authorName = meta.author ?? readable?.byline;
+  const authorName = cleanAuthorName(meta.author ?? readable?.byline);
   // Only create an author if the byline is actually a person's name — skip publication
-  // names, "Staff", section labels, and bio blurbs that get mis-extracted as authors.
+  // names, "Staff", section labels, job titles, and bio blurbs that get mis-extracted as authors.
   if (authorName && isLikelyPersonName(authorName, meta.publisher ?? host)) {
     const authorRow = await upsertAuthor({
       full_name: authorName,

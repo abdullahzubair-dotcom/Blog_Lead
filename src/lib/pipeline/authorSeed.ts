@@ -4,7 +4,7 @@
 import { fetchPage } from "@/lib/extract/fetch";
 import { extractMetadata } from "@/lib/extract/metadata";
 import { extractSameDomainLinks } from "@/lib/extract/mentions";
-import { isLikelyPersonName } from "@/lib/enrich/personFilter";
+import { isLikelyPersonName, cleanAuthorName } from "@/lib/enrich/personFilter";
 import { googleNewsHarvester } from "@/lib/harvesters/googlenews";
 import { duckduckgoHarvester } from "@/lib/harvesters/duckduckgo";
 import { webSearchHarvester } from "@/lib/harvesters/websearch";
@@ -32,7 +32,7 @@ async function resolveFromArticleUrl(articleUrl: string, expectedName?: string):
   const fetched = await fetchPage(articleUrl);
   if (!fetched) return null;
   const meta = extractMetadata(fetched.html, fetched.finalUrl);
-  const byline = meta.author;
+  const byline = cleanAuthorName(meta.author);
   if (!byline || !isLikelyPersonName(byline, meta.publisher)) return null;
   if (expectedName && !namesMatch(byline, expectedName)) {
     // The article's real byline doesn't match the given name — trust the article (ground
