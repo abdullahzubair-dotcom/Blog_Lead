@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Inbox, Loader2, RefreshCw, Send, Paperclip, X, Ban, Search, Smile, Frown, Meh, Trophy, AlertTriangle, Archive, ArchiveRestore } from "lucide-react";
+import { Inbox, Loader2, RefreshCw, Send, Paperclip, X, Ban, Search, Smile, Frown, Meh, Trophy, AlertTriangle, Archive, ArchiveRestore, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,6 +16,7 @@ interface Person {
   last_at: string | null; replied_at: string | null; bounced_at: string | null;
   reply_kind: string | null; reply_subject: string | null; reply_excerpt: string | null; reply_sentiment: string | null;
   success_at: string | null; subject: string; unread: boolean; dismissed: boolean;
+  needs_reply: boolean; ai_managed: boolean; negotiation_status: string | null;
 }
 interface Msg {
   uid: number; direction: "outbound" | "inbound"; from: string; fromName: string; to: string;
@@ -25,6 +26,7 @@ interface Msg {
 
 const TABS = [
   { key: "unread", label: "Unread" },
+  { key: "needs_reply", label: "Needs your reply" },
   { key: "replied", label: "Responses" },
   { key: "sent", label: "Awaiting" },
   { key: "filtered", label: "Filtered" },
@@ -153,9 +155,13 @@ export default function InboxPage() {
     } else toast.error(res.error ?? "Couldn't send reply.");
   }
 
-  const inTab = (p: Person) => tab === "dismissed" ? p.dismissed : !p.dismissed && (tab === "unread" ? p.unread : p.category === tab);
+  const inTab = (p: Person) => tab === "dismissed" ? p.dismissed
+    : !p.dismissed && (tab === "unread" ? p.unread : tab === "needs_reply" ? p.needs_reply : p.category === tab);
   const dateOf = (p: Person) => new Date(p.last_at ?? p.replied_at ?? p.success_at ?? 0).getTime();
   const sentRank = (s: string | null) => (s === "positive" ? 0 : s === "neutral" ? 1 : s === "negative" ? 2 : 3);
+  // The AI negotiator owns this thread and is still working it — block manual replies to avoid
+  // colliding with it (take it over on the Negotiation page first).
+  const aiLocked = !!selected?.ai_managed && [null, "negotiating"].includes(selected?.negotiation_status ?? null);
   const filtered = people
     .filter((p) => inTab(p)
       && (!q || p.name.toLowerCase().includes(q.toLowerCase()) || p.publication.toLowerCase().includes(q.toLowerCase()) || p.recipient.toLowerCase().includes(q.toLowerCase()))
@@ -224,7 +230,7 @@ export default function InboxPage() {
         <div className="flex-1 overflow-y-auto min-h-0">
           {loading ? <ListSkeleton /> : filtered.length === 0 ? (
             <p className="px-4 py-8 text-center text-xs text-muted-foreground">
-              {tab === "unread" ? "No unread replies. 🎉" : tab === "dismissed" ? "Nothing dismissed." : tab === "filtered" ? "No bounces or auto-replies." : tab === "sent" ? "Nobody awaiting a reply." : "No responses yet."}
+              {tab === "unread" ? "No unread replies. 🎉" : tab === "needs_reply" ? "Nobody waiting on your reply. 🎉" : tab === "dismissed" ? "Nothing dismissed." : tab === "filtered" ? "No bounces or auto-replies." : tab === "sent" ? "Nobody awaiting a reply." : "No responses yet."}
             </p>
           ) : filtered.map((p) => (
             <div key={p.author_id} onClick={() => selectPerson(p)} className={`group w-full text-left px-3 py-2.5 border-b border-border/60 flex items-start gap-2.5 hover:bg-muted/40 cursor-pointer ${selected?.author_id === p.author_id ? "bg-muted/50" : ""}`}>
@@ -327,11 +333,17 @@ export default function InboxPage() {
                   ))}
                 </div>
               )}
+              {aiLocked && (
+                <div className="flex items-center gap-2 mb-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-md px-2.5 py-1.5">
+                  <Bot className="h-3.5 w-3.5 shrink-0" />
+                  <span>The AI negotiator is handling this thread. Take it over on the <a href="/negotiation" className="underline">Negotiation page</a> (Hand off) before replying here.</span>
+                </div>
+              )}
               <div className="flex items-end gap-2">
                 <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => onFiles(e.target.files)} />
-                <Button variant="ghost" size="sm" className="h-9 w-9 p-0 shrink-0" onClick={() => fileRef.current?.click()} title="Attach images"><Paperclip className="h-4 w-4" /></Button>
-                <Textarea placeholder={`Reply to ${selected.name}…`} className="min-h-[44px] max-h-40 flex-1 resize-none" value={replyText} onChange={(e) => setReplyText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendReply(); } }} />
-                <Button size="sm" className="h-9 shrink-0 gap-1.5" disabled={sending || !replyText.trim()} onClick={sendReply}>{sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}Send</Button>
+                <Button variant="ghost" size="sm" className="h-9 w-9 p-0 shrink-0" onClick={() => fileRef.current?.click()} title="Attach images" disabled={aiLocked}><Paperclip className="h-4 w-4" /></Button>
+                <Textarea placeholder={aiLocked ? "AI is handling this thread — hand off on the Negotiation page to reply here." : `Reply to ${selected.name}…`} disabled={aiLocked} className="min-h-[44px] max-h-40 flex-1 resize-none disabled:opacity-60" value={replyText} onChange={(e) => setReplyText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendReply(); } }} />
+                <Button size="sm" className="h-9 shrink-0 gap-1.5" disabled={sending || !replyText.trim() || aiLocked} onClick={sendReply}>{sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}Send</Button>
               </div>
               <p className="text-[10px] text-muted-foreground mt-1 pl-11">Replies thread into the Gmail conversation · ⌘/Ctrl+Enter to send</p>
             </div>

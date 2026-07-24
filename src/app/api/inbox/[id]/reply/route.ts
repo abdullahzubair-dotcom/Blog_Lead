@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getInboxTarget, getUserEmailConfig, getUserAppPasswordEnc, resolveInboxAccount } from "@/lib/db/queries";
+import { supabaseAdmin } from "@/lib/db/supabase";
 import { decryptSecret } from "@/lib/crypto";
 import { sendEmailAs, type MailAttachment } from "@/lib/email/smtp";
 import { auth } from "@auth";
@@ -25,6 +26,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const target = await getInboxTarget(id, account);
   if (!target) return NextResponse.json({ error: "No conversation with this person in this mailbox." }, { status: 404 });
+
+  // Don't let a human reply collide with the AI negotiator. If this author's thread is AI-managed
+  // and still actively negotiating, block the manual send (unless the caller explicitly overrides)
+  // and point them to the Negotiation page to take it over there.
+  if (!body.overrideAiManaged) {
+    const { data: anchor } = await supabaseAdmin.from("outreach_emails")
+      .select("ai_managed, negotiation_status").eq("author_id", id).eq("kind", "initial")
+      .order("sent_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle();
+    if ((anchor as any)?.ai_managed && [null, "negotiating"].includes((anchor as any)?.negotiation_status ?? null)) {
+      return NextResponse.json({ error: "This thread is being handled by the AI negotiator. Take it over on the Negotiation page (Hand off) before replying here.", aiManaged: true }, { status: 409 });
+    }
+  }
   const recipient = to || target.recipient;
   if (!subject) subject = /^re:/i.test(target.lastSubject) ? target.lastSubject : `Re: ${target.lastSubject || "our conversation"}`;
 

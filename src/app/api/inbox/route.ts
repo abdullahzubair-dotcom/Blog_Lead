@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
   const active = enriched.filter((p) => !p.dismissed); // dismissed excluded from the main tabs
   const counts = {
     unread: active.filter((p) => p.unread).length,
+    needs_reply: active.filter((p) => p.needs_reply).length,
     replied: active.filter((p) => p.category === "replied").length,
     sent: active.filter((p) => p.category === "sent").length,
     filtered: active.filter((p) => p.category === "filtered").length,

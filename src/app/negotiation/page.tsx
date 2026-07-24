@@ -369,15 +369,15 @@ export default function NegotiationPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={selectAllVisible} disabled={rows.length === 0}>Select all ({rows.length})</Button>
           {sel.size > 0 && <Button variant="ghost" size="sm" onClick={clearSel}>Clear ({sel.size})</Button>}
-          {senderOptions.length > 1 && (
+          {senderOptions.length > 0 && (
             <SearchableSelect
               value={senderFilter}
               onChange={setSenderFilter}
               options={senderOptions}
               noneLabel="All senders"
-              placeholder="All senders"
-              searchPlaceholder="Search sender…"
-              className="w-56"
+              placeholder="Filter by sender…"
+              searchPlaceholder="Search a teammate…"
+              className="w-60"
               menuWidth="w-72"
             />
           )}

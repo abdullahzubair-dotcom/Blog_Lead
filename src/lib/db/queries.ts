@@ -2334,6 +2334,9 @@ export interface InboxPerson {
   subject: string;
   unread: boolean;     // a reply arrived that this user hasn't opened yet
   dismissed: boolean;  // pushed aside by this user
+  needs_reply: boolean;      // they replied and no one (AI or human) has answered since
+  ai_managed: boolean;       // the AI negotiator is handling this thread
+  negotiation_status: string | null;
 }
 
 // Scoped to ONE user's own mailbox: only conversations sent through their email address
@@ -2343,7 +2346,7 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
   const isEnvOwner = !!process.env.SMTP_USER && userEmail.toLowerCase() === process.env.SMTP_USER.toLowerCase();
   let q = supabaseAdmin
     .from("outreach_emails")
-    .select("author_id, sender_email, subject, status, sent_at, replied_at, bounced_at, reply_kind, reply_subject, reply_excerpt, reply_sentiment, success_at, author:authors(full_name, avatar_url, domain:domains(name, host), contacts(type, value))")
+    .select("author_id, sender_email, subject, status, sent_at, replied_at, bounced_at, reply_kind, reply_subject, reply_excerpt, reply_sentiment, success_at, ai_managed, negotiation_status, author:authors(full_name, avatar_url, domain:domains(name, host), contacts(type, value))")
     .or("status.eq.sent,replied_at.not.is.null,bounced_at.not.is.null");
   q = isEnvOwner ? q.or(`sender_email.eq.${userEmail},sender_email.is.null`) : q.eq("sender_email", userEmail);
   const { data } = await q
@@ -2367,6 +2370,15 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
     for (const s of st ?? []) stateByAuthor.set(s.author_id, { last_seen_at: s.last_seen_at, dismissed: !!s.dismissed });
   }
 
+  // Which threads have we already answered since their reply? (a negotiation reply sent after
+  // their latest reply). Used to compute "needs your reply" = replied and not yet answered.
+  const lastAnswerByAuthor = new Map<string, string>();
+  if (authorIds.length) {
+    const { data: negs } = await supabaseAdmin
+      .from("outreach_emails").select("author_id, sent_at").eq("kind", "negotiation").eq("status", "sent").in("author_id", authorIds);
+    for (const n of negs ?? []) { const cur = lastAnswerByAuthor.get((n as any).author_id); const at = (n as any).sent_at ?? ""; if (!cur || at > cur) lastAnswerByAuthor.set((n as any).author_id, at); }
+  }
+
   const out: InboxPerson[] = [];
   for (const [author_id, r] of byAuthor) {
     const a: any = r.author ?? {};
@@ -2376,6 +2388,12 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
     const category: InboxPerson["category"] = r.replied_at ? "replied" : (r.bounced_at || r.reply_kind === "auto") ? "filtered" : "sent";
     const state = stateByAuthor.get(author_id);
     const unread = !!r.replied_at && (!state?.last_seen_at || r.replied_at > state.last_seen_at);
+    const negStatus = (r.negotiation_status as string | null) ?? null;
+    const answeredAt = lastAnswerByAuthor.get(author_id);
+    // A genuine (non-auto) reply that nobody has answered since, and the thread isn't closed/handed off.
+    const needs_reply = category === "replied" && r.reply_kind !== "auto"
+      && !["agreed", "declined", "handoff"].includes(negStatus ?? "")
+      && (!answeredAt || (r.replied_at ?? "") > answeredAt);
     out.push({
       author_id, name: a.full_name ?? "Unknown", publication: a.domain?.name ?? a.domain?.host ?? "",
       avatar_url: a.avatar_url ?? null, recipient, sender_email: r.sender_email ?? null, category,
@@ -2384,6 +2402,7 @@ export async function getInboxList(userEmail: string): Promise<InboxPerson[]> {
       reply_subject: r.reply_subject ?? null, reply_excerpt: r.reply_excerpt ?? null, reply_sentiment: r.reply_sentiment ?? null,
       success_at: r.success_at ?? null, subject: r.subject ?? "",
       unread, dismissed: !!state?.dismissed,
+      needs_reply, ai_managed: !!r.ai_managed, negotiation_status: negStatus,
     });
   }
   out.sort((a, b) => (b.last_at ?? "").localeCompare(a.last_at ?? ""));

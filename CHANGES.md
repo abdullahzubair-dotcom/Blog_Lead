@@ -133,9 +133,30 @@ Email:      src/lib/email/deliver.ts                                      (attac
 API:        src/app/api/negotiation/threads/route.ts                      (needs_human bucket + fields + draftBody fix)
             src/app/api/negotiation/[id]/route.ts                         (assist/handoff/send-attach + GET draft fix)
             src/app/api/negotiation/[id]/asset/route.ts                   (new — document upload)
-Queries:    src/lib/db/queries.ts                                         (getConversation excludes drafts)
-UI:         src/app/negotiation/page.tsx                                  (Human intervention tab + panel; sent-draft fix)
+Queries:    src/lib/db/queries.ts                                         (getConversation excludes drafts; getInboxList needs_reply/ai_managed)
+UI:         src/app/negotiation/page.tsx                                  (Human intervention tab + panel; sent-draft fix; sender filter)
+Inbox:      src/app/inbox/page.tsx                                        (Needs-your-reply tab + AI-managed compose lock)
+            src/app/api/inbox/route.ts                                    (needs_reply count)
+            src/app/api/inbox/[id]/reply/route.ts                         (409 when AI-managed)
 ```
+
+## 7. Follow-up fixes — runaway guard, waive-fee, inbox (2026-07-24, later)
+
+### 7a. Runaway auto-negotiation (the "6 replies to one message, marked agreed" bug)
+Root cause: the old reply detector re-marked `replied_at` every cron sweep, so the auto-negotiation loop thought there was a new reply and re-answered — one thread sent **6** escalating replies for a single inbound and then flipped to `agreed` with a bogus amount owed. Fixed by:
+- **Idempotent reply attribution** (already in `imap.ts` `recordReplyOnAnchor`) stops the re-mark.
+- **Hard reply cap** in the auto-negotiation loop (`src/app/api/emails/process/route.ts`): count sent `kind='negotiation'` replies in the thread; at `settings.max_thread_length` (default 4) it **escalates to `needs_human`** instead of replying again (`max_thread_length` was defined but never enforced).
+- **Waive-fee guard** (`src/lib/negotiation/run.ts`): if the reply says waive / free / no charge / complimentary, an `agreed` is recorded as a **placement at 0 with no payment owed** (was recording the ceiling as owed).
+- One-time cleanup: threads with ≥4 sent AI replies were moved to `needs_human` and their bogus `agreed_price`/`payment_status` cleared. Re-run on the fork: `UPDATE ... SET negotiation_status='needs_human', agreed_price=NULL, payment_status=NULL` for anchors having ≥ `max_thread_length` sent negotiation children.
+
+### 7b. Inbox — "Needs your reply" section + AI-managed lock
+`src/lib/db/queries.ts` `getInboxList` + `InboxPerson` gain `needs_reply`, `ai_managed`, `negotiation_status`. `needs_reply` = a genuine (non-auto) reply that **nobody has answered since** (no `kind='negotiation'` sent after their `replied_at`) and the thread isn't agreed/declined/handed off.
+- `src/app/inbox/page.tsx`: new **"Needs your reply"** tab (filters on `needs_reply`); `src/app/api/inbox/route.ts` adds the count.
+- **AI-managed lock**: when a thread is `ai_managed` and still actively negotiating (`negotiation_status` null/`negotiating`), the inbox compose box is disabled with a banner pointing to the Negotiation page, and `src/app/api/inbox/[id]/reply/route.ts` returns `409` (unless `overrideAiManaged`) — so a human reply can't collide with the AI negotiator.
+
+### 7c. Classifier + filter (also in §3)
+- Deterministic STRONG-cue override so "happy to jump on a call" etc. force `needs_human` even when the LLM reads the tone as positive (§3a).
+- Searchable **"sent from"** dropdown on the Negotiation page, now always shown, lists all senders present (§3g).
 
 ## 6. Manual checks after porting
 1. Run migration 040 on the fork's DB.

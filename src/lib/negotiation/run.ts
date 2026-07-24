@@ -161,7 +161,10 @@ export async function negotiateThread(emailId: string, opts?: { forceDraft?: boo
     ai_managed: true, max_offer: ceiling, negotiation_status: draft.statusHint,
   }).select("id").single();
 
-  const agreedPrice = draft.statusHint === "agreed" ? (draft.suggestedOffer ?? cls.priceMentioned ?? null) : null;
+  // If they explicitly WAIVED the fee / offered free editorial, an "agreed" is a placement at no
+  // cost — never record a payment owed (fixes threads marked agreed with a bogus amount owed).
+  const waived = /\b(waive[ds]?|free of charge|no cost|no charge|complimentary|on the house|gratis|won'?t charge)\b/i.test(latestReply?.reply_excerpt ?? "");
+  const agreedPrice = draft.statusHint === "agreed" ? (waived ? 0 : (draft.suggestedOffer ?? cls.priceMentioned ?? null)) : null;
   await updateOutreachEmail(initialId, {
     negotiation_status: draft.statusHint,
     negotiation_notes: `their intent: ${cls.intent} (${cls.reason}); our offer: ${draft.suggestedOffer ?? "-"}; ceiling: ${ceiling ?? "placement-only"}`,

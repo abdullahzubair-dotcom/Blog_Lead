@@ -164,6 +164,19 @@ export async function POST(req: NextRequest) {
             .or(`id.eq.${(it as any).id},parent_id.eq.${(it as any).id}`);
           const rowsT = (thr ?? []) as any[];
           if (rowsT.some((r) => r.reply_kind === "auto")) continue; // autoresponders aren't negotiated
+          // Hard reply cap: never let the AI send more than max_thread_length replies in one
+          // thread (default 4). At the cap, escalate to a human instead of endless back-and-forth
+          // (prevents the runaway where a re-marked reply made the AI answer the same message N times).
+          const sentNegs = rowsT.filter((r) => r.kind === "negotiation" && r.status === "sent").length;
+          if (sentNegs >= (settings.max_thread_length ?? 4)) {
+            await supabaseAdmin.from("outreach_emails").update({
+              negotiation_status: "needs_human", intervention_type: "other",
+              intervention_ask: "Long AI back-and-forth, a person should take over",
+              intervention_reason: `Reached the ${settings.max_thread_length ?? 4}-reply cap for this thread.`,
+              intervention_at: new Date().toISOString(),
+            }).eq("id", (it as any).id);
+            continue;
+          }
           const latestReply = rowsT.map((r) => r.replied_at).filter(Boolean).sort().pop();
           const lastAnswer = rowsT.filter((r) => r.kind === "negotiation" && r.status === "sent").map((r) => r.sent_at).filter(Boolean).sort().pop();
           if (!latestReply) continue;
