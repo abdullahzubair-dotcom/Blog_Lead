@@ -54,6 +54,7 @@ function StatusBadge({ status }: { status: string }) {
 const PLACEHOLDER_DOCS = [
   ["{{author_name}}", "Writer's full name"],
   ["{{pub_name}}", "Publication name"],
+  ["{{website_name}}", "Their website / publication name (same as pub_name)"],
   ["{{article_title}}", "Their most recent article title"],
   ["{{article_date}}", "Publication date"],
   ["{{tool_mentioned}}", "First AI tool they mentioned"],
@@ -78,6 +79,7 @@ const LINKEDIN_PLACEHOLDER_DOCS = [
   ["{{author_name}}", "Writer's full name"],
   ["{{first_name}}", "Writer's first name"],
   ["{{pub_name}}", "Publication name"],
+  ["{{website_name}}", "Their website / publication name (same as pub_name)"],
   ["{{custom_line}}", "AI-generated personalized note (already includes a greeting)"],
 ];
 const LINKEDIN_LIMIT = 300; // LinkedIn's connection-note character cap

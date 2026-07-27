@@ -101,7 +101,7 @@ async function runGeneration(workflowId: string, templateId?: string) {
         if (template?.body) {
           const first = (author.full_name ?? "there").trim().split(/\s+/)[0] || "there";
           const vars: Record<string, string> = {
-            author_name: author.full_name, first_name: first, pub_name: pubName, custom_line: note,
+            author_name: author.full_name, first_name: first, pub_name: pubName, website_name: pubName, custom_line: note,
           };
           body = clampNote(fillTemplate(template.body, vars).replace(/\{\{\w+\}\}/g, ""));
         }

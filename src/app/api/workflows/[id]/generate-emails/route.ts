@@ -159,6 +159,7 @@ async function runGeneration(workflowId: string, templateId?: string) {
         const vars: Record<string, string> = {
           author_name: author.full_name,
           pub_name: pubName,
+          website_name: pubName, // alias for {{pub_name}} — the author's site/publication name
           article_title: cleanTitle(firstArticle?.title ?? ""),
           article_date: firstArticle?.published_at?.slice(0, 10) ?? "",
           tool_mentioned: tools[0] ?? "AI tools",
