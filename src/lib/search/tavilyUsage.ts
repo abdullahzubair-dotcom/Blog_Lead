@@ -19,8 +19,10 @@ const ENV_ID = "env";                           // synthetic id for the env-var 
 // When a key hits its monthly quota (429/402/432/403) it's flagged exhausted for the current
 // month and dropped from rotation; exhaustion auto-clears when the month rolls over, so keys
 // become usable again on quota renewal. Add as many as you want — you never run out.
-export interface PoolEntry { id: string; enc: string; label?: string; exhaustedMonth?: string }
-export interface PoolKeyStatus { id: string; label: string; masked: string; active: boolean; exhaustedThisMonth: boolean; used: number }
+// fallback=true → a paid / pay-as-you-go key that is only used once every FREE key is exhausted
+// this month (so free quota is spent first). Free keys (fallback falsy) always take priority.
+export interface PoolEntry { id: string; enc: string; label?: string; exhaustedMonth?: string; fallback?: boolean }
+export interface PoolKeyStatus { id: string; label: string; masked: string; active: boolean; exhaustedThisMonth: boolean; used: number; fallback: boolean }
 
 async function readPool(): Promise<PoolEntry[]> {
   const r = redis();
@@ -47,12 +49,13 @@ async function readCounts(ids: string[]): Promise<Record<string, number>> {
   return out;
 }
 
-export async function addTavilyKey(key: string, label?: string): Promise<void> {
+export async function addTavilyKey(key: string, label?: string, fallback = false): Promise<void> {
   const clean = key.trim();
   if (!clean) throw new Error("empty key");
   const pool = await readPool();
-  if (pool.some((e) => decryptSecret(e.enc) === clean)) return; // skip exact duplicate
-  pool.push({ id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, enc: encryptSecret(clean)!, label: label?.trim() || undefined });
+  const existing = pool.find((e) => decryptSecret(e.enc) === clean);
+  if (existing) { existing.fallback = fallback; if (label) existing.label = label.trim(); await writePool(pool); return; } // update flag/label on re-add
+  pool.push({ id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, enc: encryptSecret(clean)!, label: label?.trim() || undefined, fallback });
   await writePool(pool);
 }
 export async function removeTavilyKey(id: string): Promise<void> {
@@ -63,13 +66,19 @@ export async function markTavilyKeyExhausted(id: string): Promise<void> {
   const e = pool.find((x) => x.id === id);
   if (e) { e.exhaustedMonth = monthTag(); await writePool(pool); }
 }
+// Put an exhausted key back into rotation (manual reactivate; also used to undo a test mark).
+export async function clearTavilyKeyExhausted(id: string): Promise<void> {
+  const pool = await readPool();
+  const e = pool.find((x) => x.id === id);
+  if (e && e.exhaustedMonth) { delete e.exhaustedMonth; await writePool(pool); }
+}
 export async function listTavilyKeys(): Promise<PoolKeyStatus[]> {
   const month = monthTag();
   const pool = await readPool();
   const counts = await readCounts(pool.map((e) => e.id));
   return pool.map((e) => {
     const exhausted = e.exhaustedMonth === month;
-    return { id: e.id, label: e.label ?? "", masked: maskKey(decryptSecret(e.enc) ?? ""), active: !exhausted, exhaustedThisMonth: exhausted, used: counts[e.id] ?? 0 };
+    return { id: e.id, label: e.label ?? "", masked: maskKey(decryptSecret(e.enc) ?? ""), active: !exhausted, exhaustedThisMonth: exhausted, used: counts[e.id] ?? 0, fallback: !!e.fallback };
   });
 }
 // The next key to use: the LEAST-USED non-exhausted pool entry (balances load across all keys
@@ -78,12 +87,15 @@ export async function listTavilyKeys(): Promise<PoolKeyStatus[]> {
 export async function getActiveTavilyKey(reserve = false): Promise<{ id: string; key: string } | null> {
   const month = monthTag();
   const active = (await readPool()).filter((e) => e.exhaustedMonth !== month);
+  // Free-first: only fall to paid (fallback) keys once every free key is exhausted this month.
+  const free = active.filter((e) => !e.fallback);
+  const tier = free.length > 0 ? free : active.filter((e) => e.fallback);
   let chosen: { id: string; key: string } | null = null;
-  if (active.length > 0) {
-    const counts = await readCounts(active.map((e) => e.id));
-    // Least-used first; stable tiebreak on pool order so behavior is deterministic.
-    active.sort((a, b) => (counts[a.id] ?? 0) - (counts[b.id] ?? 0));
-    for (const e of active) {
+  if (tier.length > 0) {
+    const counts = await readCounts(tier.map((e) => e.id));
+    // Within the chosen tier, least-used first; stable tiebreak on pool order = deterministic.
+    tier.sort((a, b) => (counts[a.id] ?? 0) - (counts[b.id] ?? 0));
+    for (const e of tier) {
       const key = decryptSecret(e.enc);
       if (key) { chosen = { id: e.id, key }; break; }
     }
