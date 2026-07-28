@@ -89,9 +89,25 @@ export function extractMetadata(html: string, url: string): ExtractedMeta {
     const rel = html.match(/<a[^>]+rel=["'][^"']*\bauthor\b[^"']*["'][^>]*>([^<]{2,60})<\/a>/i);
     if (rel) meta.author = decode(rel[1].replace(/^by\s+/i, "").trim());
   }
+  // schema.org microdata (itemprop="author" scope with a nested itemprop="name"). The name
+  // often sits several nodes deep — an avatar <img>, a "by" text node, and a profile <a> can
+  // all come between the author marker and the name span (e.g. Shopify's blog). So search a
+  // window after the author marker for the first itemprop="name" rather than requiring it
+  // immediately adjacent (the old regex failed on exactly that structure → 0 authors).
   if (!meta.author) {
-    const ip = html.match(/itemprop=["']author["'][^>]*>\s*(?:<[^>]+itemprop=["']name["'][^>]*>)?\s*([^<]{2,60})</i);
-    if (ip) meta.author = decode(ip[1].replace(/^by\s+/i, "").trim());
+    const ip = html.match(/itemprop=["']author["'][\s\S]{0,600}?itemprop=["']name["'][^>]*>\s*([^<]{2,60})</i);
+    if (ip) { const t = decode(ip[1].replace(/^(?:by|par|von|por)[:\s]+/i, "").trim()); if (t) meta.author = t; }
+  }
+  // Author-profile link slug fallback (e.g. Shopify's href="/blog/authors/alicia-clark" →
+  // "Alicia Clark"). Only accept a multi-word result (first + last) so single-token slugs
+  // like "staff" or "team" don't masquerade as a person; downstream isLikelyPersonName still
+  // filters. Real casing from itemprop="name" above is preferred; this is the fallback.
+  if (!meta.author) {
+    const slug = html.match(/href=["'][^"']*\/authors?\/([a-z][a-z0-9]+(?:-[a-z0-9]+)+)["']/i);
+    if (slug) {
+      const name = slug[1].split("-").filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      if (/\s/.test(name)) meta.author = name;
+    }
   }
   if (!meta.author) {
     const by = html.match(/<(?:a|span|div|p)[^>]+class=["'][^"']*(?:\bauthor\b|byline|by-line|author-name)[^"']*["'][^>]*>\s*(?:<a[^>]*>)?\s*([^<]{2,60})</i);

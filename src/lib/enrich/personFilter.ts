@@ -15,13 +15,19 @@ const NON_PERSON_WORDS = new Set([
   "scientist", "consultant", "analyst", "specialist", "officer", "founder", "cofounder",
   "ceo", "cto", "cmo", "coo", "vp", "journalist", "reporter", "correspondent", "columnist",
   "freelance", "freelancer", "writer", "researcher", "strategist", "lead", "head", "applied",
-  // scraper nav-junk tokens
-  "navigation", "links",
+  // scraper nav-junk tokens (skip-links / menu labels scraped as bylines, e.g. Semrush's
+  // "Jump to Authorization" accessibility link)
+  "navigation", "links", "jump", "skip", "menu", "toggle", "authorization", "login",
+  "logout", "signin", "signup", "search", "subscribe", "newsletter", "cookie", "cookies",
 ]);
 
 // Connector words a real name never contains, but a scraped title/phrase does
-// ("Head of Content", "Consultant and Applied scientist", "Editor at CNET").
-const TITLE_CONNECTOR = /\s(and|of|the|for|at|with|&)\s/i;
+// ("Head of Content", "Consultant and Applied scientist", "Editor at CNET", "Jump to X").
+const TITLE_CONNECTOR = /\s(and|of|the|for|at|with|to|&)\s/i;
+
+// A single token that is the same word doubled ("AuthorizationAuthorization",
+// "MenuMenu") — a classic scraped-nav-label glitch, never a real name token.
+const DOUBLED_WORD = /^(.{3,})\1$/i;
 
 // Scraper junk that gets concatenated onto a byline ("...Social Links Navigation", "By ...").
 const LEADING_JUNK = /^(by|written by|words by|author|posted by)[:\s]+/i;
@@ -51,6 +57,7 @@ export function isLikelyPersonName(name: string, publication?: string): boolean 
   const lower = n.toLowerCase();
   for (const t of tokens) {
     if (NON_PERSON_WORDS.has(t.toLowerCase().replace(/[^a-z]/g, ""))) return false;
+    if (DOUBLED_WORD.test(t)) return false;     // "AuthorizationAuthorization" → scraped nav junk
   }
   // matches the publication name → it's the outlet, not a person
   if (publication) {

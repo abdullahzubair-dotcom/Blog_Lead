@@ -16,6 +16,7 @@ import { scrapegraphHarvester } from "@/lib/harvesters/scrapegraph";
 import { webSearchHarvester } from "@/lib/harvesters/websearch";
 import { searchEnabled } from "@/lib/search/webSearch";
 import { rssHarvester } from "@/lib/harvesters/rss";
+import { discoverSiteArticleUrls } from "@/lib/pipeline/siteUrls";
 import { SEED_DOMAINS } from "@config/seeds";
 import { fetchPage, closeSharedBrowser } from "@/lib/extract/fetch";
 import { BlitzDomainCache } from "@/lib/enrich/blitz";
@@ -133,6 +134,19 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
 
     const resume = options?.resume;
     const isResuming = !!resume;
+
+    // ── Seed-campaign shape ──────────────────────────────────────────────────
+    // A "site campaign" is one seeded with specific sites/articles (the Discovery
+    // channel's "Sites to outreach" + "Articles" boxes) rather than keywords. When it
+    // has NO keywords and NO writer seed, it's a PURE site campaign: we mine only the
+    // chosen sites and attribute only their authors — no curated genAI harvest, no
+    // keyword rounds (both of which would pull in unrelated writers and mis-credit them
+    // to this campaign via linkAuthorsToCampaign).
+    const seedSiteDomains = (options?.seedDomains ?? []).map((d) => d.trim()).filter(Boolean);
+    const hasSeedArticleUrls = (options?.seedArticleUrls ?? []).some((u) => /^https?:\/\//.test(u.trim()));
+    const hasSeedSites = seedSiteDomains.length > 0 || hasSeedArticleUrls;
+    const hasKeywordsEarly = (options?.customKeywords?.length ?? 0) > 0;
+    const isPureSiteCampaign = hasSeedSites && !hasKeywordsEarly && !options?.seedWriter;
     // Do NOT delete the checkpoint at the start of a resumed chunk. It must survive until this
     // chunk writes its own (saveCheckpoint overwrites the single key) or the run fully
     // completes (line ~581). Deleting it here left a ~210s window with no checkpoint — if the
@@ -147,7 +161,11 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     signal.addEventListener("abort", () => queue.clear(), { once: true });
 
     // ── RSS — run once upfront (fixed feeds, no query benefit from looping) ────
-    if (harvesterMap.rss && !resume?.rssComplete) {
+    // Skipped entirely for a pure site campaign: the curated/auto-learned domain set
+    // would harvest unrelated genAI writers and (since Stage 2 links every processed
+    // author to the campaign) mis-credit them. The dedicated seed-site harvest below
+    // mines the campaign's chosen sites instead, relevance-free.
+    if (harvesterMap.rss && !resume?.rssComplete && !isPureSiteCampaign) {
       // RSS source set = curated SEED_DOMAINS ∪ auto-learned domains (sites where past runs
       // found real writers). This is the self-expanding half — it grows every run. We do NOT
       // read harvester_config.domains anymore: it used to REPLACE the seed list and had filled
@@ -225,6 +243,33 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
       emit("discover", `${saved} campaign article(s) queued.`);
     }
 
+    // ── Seed-site harvest — mine each campaign "site" for its article URLs ────────
+    // Robust, relevance-free discovery: WordPress REST + RSS/sitemaps + rendered section
+    // crawl, unioned per site. Every URL found is queued as a "seed_site" hit so Stage 2
+    // profiles it, extracts the author, and links that author to the campaign. This is
+    // what makes the online Discovery channel's "Sites to outreach" box actually work.
+    if (seedSiteDomains.length > 0 && !isResuming) {
+      emit("discover", `Mining ${seedSiteDomains.length} campaign site${seedSiteDomains.length === 1 ? "" : "s"} for articles (WordPress, RSS, sitemap, page crawl)...`);
+      let totalSiteUrls = 0;
+      for (const site of seedSiteDomains) {
+        if (signal.aborted) break;
+        try {
+          const { urls, breakdown } = await discoverSiteArticleUrls(site, 120, signal);
+          if (urls.length > 0) {
+            const saved = await insertDiscoveryHits(urls.map((url) => ({ url, source: "seed_site" }))).catch(() => 0);
+            stats.hitsDiscovered += saved;
+            totalSiteUrls += urls.length;
+            emit("discover", `${site}: ${urls.length} article URLs (wp ${breakdown.wp}, rss ${breakdown.rss}, sitemap ${breakdown.sitemap}, hub ${breakdown.hub}, crawl ${breakdown.crawl}) — ${saved} queued`);
+          } else {
+            emit("discover", `${site}: no article URLs found`);
+          }
+        } catch (e: any) {
+          emit("discover", `${site}: harvest error — ${e?.message ?? "unknown"}`);
+        }
+      }
+      emit("discover", `Seed-site harvest complete — ${totalSiteUrls} article URLs across ${seedSiteDomains.length} site(s).`);
+    }
+
     const seedWriter = options?.seedWriter;
     const hasKeywords = (options?.customKeywords?.length ?? 0) > 0;
     if (seedWriter && !isResuming) {
@@ -271,7 +316,10 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     // A pure writer-seeded campaign (no keywords) skips the keyword round loop entirely —
     // it shouldn't pull in unrelated authors via the global default topics. If keywords are
     // ALSO given alongside the seed writer, both run.
-    const skipKeywordLoop = !!seedWriter && !hasKeywords;
+    // Skip the keyword round loop for a writer-only OR a pure site campaign — both should
+    // draw only from their seeds, not the global default topics. Keywords alongside either
+    // seed re-enable the loop.
+    const skipKeywordLoop = (!!seedWriter || isPureSiteCampaign) && !hasKeywords;
     if (resume?.discoveryDone) {
       emit("discover", "Discovery already complete from a previous run — resuming article processing only");
     } else if (skipKeywordLoop) {
@@ -469,14 +517,24 @@ export async function runDiscoveryPipeline(onProgress?: ProgressCallback, option
     const processQueue = new PQueue({ concurrency: CONCURRENCY });
     const MAX_TOTAL = 5000;
 
-    const rawHits = await getAllPendingHits(MAX_TOTAL);
+    const rawHitsAll = await getAllPendingHits(MAX_TOTAL);
+    // For a pure site campaign, process ONLY this run's seed hits — the global pending
+    // pool may hold unrelated RSS/keyword hits from other runs, and Stage 2 links every
+    // processed author to the campaign. Restricting to seed sources keeps the campaign's
+    // author list to exactly the sites/articles it was given. (Non-seed pending hits stay
+    // unprocessed for a later general run to pick up.)
+    const rawHits = isPureSiteCampaign
+      ? rawHitsAll.filter((h) => h.source === "seed_site" || h.source === "seed_article")
+      : rawHitsAll;
     // Skip URLs we've ALREADY profiled into an article — no re-fetch, no re-scoring, no
     // wasted LLM tokens on a re-run. Also dedupe by URL (same article from multiple sources).
     const alreadyProfiled = await getProfiledUrlSet();
     const seenUrls = new Set<string>();
     let profiledSkipped = 0;
     const allHits = rawHits.filter(h => {
-      if (isBlockedUrl(h.url)) return false;            // video/social platform — not an article
+      // Seed sources bypass the block (user explicitly chose that site/article).
+      const seedHit = h.source === "seed_site" || h.source === "seed_article";
+      if (isBlockedUrl(h.url) && !seedHit) return false; // video/social platform — not an article
       if (seenUrls.has(h.url)) return false;
       seenUrls.add(h.url);
       if (alreadyProfiled.has(h.url)) { profiledSkipped++; return false; }
@@ -653,9 +711,13 @@ function isLikelyEnglish(url: string, title?: string): boolean {
 }
 
 export async function processHit(hitId: string, url: string, source: string, seeds: SeedTool[], ourProductNames: string[] = [], abortSignal?: AbortSignal): Promise<string | undefined> {
+  // Seed sources (campaign sites/articles the user explicitly chose) bypass the language
+  // and genAI-relevance gates: a site campaign wants that site's writers regardless of
+  // topic or language (e.g. a French blog). The person-name filter downstream is the gate.
+  const isSeed = source === "seed_site" || source === "seed_article";
   let host = "";
   try { host = new URL(url).hostname; } catch { return; }
-  if (isBlockedUrl(url)) { await markHitProcessed(hitId).catch(() => {}); return; } // video/social — not an article
+  if (isBlockedUrl(url) && !isSeed) { await markHitProcessed(hitId).catch(() => {}); return; } // video/social — not an article
   if (await isSuppressed(host)) return;
 
   // Skip URLs already in the articles table — prevents re-fetching on new discovery runs
@@ -675,7 +737,13 @@ export async function processHit(hitId: string, url: string, source: string, see
       .eq("article_id", existingArticle.id)
       .limit(1)
       .maybeSingle();
-    return aa?.author_id ?? undefined;
+    if (aa?.author_id) return aa.author_id;
+    // Existing article has NO author on record. For a SEED source (a site/article the user
+    // explicitly chose), fall through to re-fetch and re-extract — an earlier run may have
+    // missed the byline before an extraction improvement (e.g. schema.org microdata sites
+    // like Shopify). For non-seed sources keep the old skip (don't re-fetch the whole
+    // author-less long tail on every general run).
+    if (!isSeed) return undefined;
   }
 
   const fetched = await fetchPage(url, abortSignal);
@@ -685,7 +753,7 @@ export async function processHit(hitId: string, url: string, source: string, see
 
   const { html, finalUrl } = fetched;
   const meta = extractMetadata(html, finalUrl);
-  if (!isLikelyEnglish(finalUrl || url, meta.title ?? undefined)) return;
+  if (!isSeed && !isLikelyEnglish(finalUrl || url, meta.title ?? undefined)) return;
   const readable = await extractReadability(html, finalUrl);
   const text = readable?.textContent ?? "";
 
@@ -704,8 +772,16 @@ export async function processHit(hitId: string, url: string, source: string, see
     } catch { /* best-effort */ }
   }
 
-  const { relevant, score: llmRelevanceScore } = await scoreArticleRelevance(meta.title ?? "", text.slice(0, 600), abortSignal);
-  if (!relevant || abortSignal?.aborted) return;
+  // Seed sources skip the relevance LLM entirely (keep every article, save the tokens);
+  // a full score of 1 reflects "explicitly chosen by the campaign."
+  let llmRelevanceScore = 1;
+  if (!isSeed) {
+    const { relevant, score } = await scoreArticleRelevance(meta.title ?? "", text.slice(0, 600), abortSignal);
+    if (!relevant || abortSignal?.aborted) return;
+    llmRelevanceScore = score;
+  } else if (abortSignal?.aborted) {
+    return;
+  }
 
   const archetype = classifyArchetype(meta.title ?? "", text);
 

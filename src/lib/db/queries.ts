@@ -165,10 +165,15 @@ export async function upsertMention(articleId: string, toolName: string, count =
 
 // ─── Discovery Hits ───────────────────────────────────────────────────────────
 
+// Seed sources are URLs/sites the user explicitly chose for a campaign, so they bypass the
+// video/social blocklist (e.g. a real bylined post on vimeo.com/blog): the user asked for
+// that site's writers, so honor it. Everything else is still filtered.
+const SEED_SOURCES = new Set(["seed_site", "seed_article"]);
+
 export async function insertDiscoveryHit(hit: { url: string; source: string; query?: string; title?: string; snippet?: string }) {
   // Drop video/social/audio platforms (YouTube, TikTok, Reddit, X…) — we only profile
   // written articles & blog posts, so junk URLs never even enter the queue.
-  if (isBlockedUrl(hit.url)) return;
+  if (isBlockedUrl(hit.url) && !SEED_SOURCES.has(hit.source)) return;
   // Explicitly whitelist columns — never spread unknown fields (e.g. camelCase from harvesters)
   const { error } = await supabaseAdmin.from("discovery_hits").upsert(
     {
@@ -193,7 +198,7 @@ export async function insertDiscoveryHits(
 ): Promise<number> {
   const now = new Date().toISOString();
   const rows = hits
-    .filter((h) => h.url && !isBlockedUrl(h.url))
+    .filter((h) => h.url && (!isBlockedUrl(h.url) || SEED_SOURCES.has(h.source)))
     .map((h) => ({ url: h.url, source: h.source, query: h.query ?? null, title: h.title ?? null, snippet: h.snippet ?? null, discovered_at: now, processed: false }));
   let n = 0;
   for (let i = 0; i < rows.length; i += 500) {
