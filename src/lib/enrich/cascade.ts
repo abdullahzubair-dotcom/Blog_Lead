@@ -73,7 +73,10 @@ export async function resolveEmailCascade(
       for (let i = 0; i < urls.length; i++) {
         onStep(`↳ post ${i + 1}/${urls.length}: ${hostOf(urls[i])}`);
         const sig = await scrapePageSignals(urls[i]);
-        if (sig?.emails[0]) { onStep(`found email on their page`); return { email: sig.emails[0], source: "page-scrape", score: 90 }; }
+        // A page footer/nav often lists a generic org mailbox (plus@shopify.com, press@…) that
+        // is NOT the author's — take the first address that isn't a role/generic mailbox.
+        const pem = sig?.emails.find((e) => !isRoleEmail(e));
+        if (pem) { onStep(`found email on their page`); return { email: pem, source: "page-scrape", score: 90 }; }
         absorb(sig);
         if (socials.linkedin) { onStep(`found LinkedIn on a post: ${socials.linkedin.replace("https://", "")}`); break; }
       }
@@ -85,7 +88,8 @@ export async function resolveEmailCascade(
         if (!surl || socials.linkedin) continue;
         onStep(`checking ${label} profile for LinkedIn/email…`);
         const sig = await scrapePageSignals(surl);
-        if (sig?.emails[0]) { onStep(`found email on ${label}`); return { email: sig.emails[0], source: "social", score: 80 }; }
+        const sem = sig?.emails.find((e) => !isRoleEmail(e));
+        if (sem) { onStep(`found email on ${label}`); return { email: sem, source: "social", score: 80 }; }
         absorb(sig);
         if (socials.linkedin) onStep(`found LinkedIn on ${label}: ${socials.linkedin.replace("https://", "")}`);
       }

@@ -216,12 +216,16 @@ export async function draftNegotiationReply(input: DraftInput): Promise<DraftRes
   }
 
   const convo = thread.map((m) => `${m.from === "us" ? "US" : publication.toUpperCase() || "THEM"}: ${m.body}`).join("\n\n===\n\n");
-  const openPct = Math.min(100, Math.max(0, settings.opening_percent ?? 40));
-  const opening = ceiling == null ? null : Math.max(floor, Math.round(floor + (ceiling - floor) * (openPct / 100)));
   const aggr = AGGRESSION[settings.aggressiveness] ?? AGGRESSION.balanced;
+  // ASK-FIRST pricing: never propose our own number before the writer names theirs. We only put
+  // a figure on the table once THEY have quoted one, then negotiate against the ceiling. This
+  // stops the agent from opening with an unprompted number (e.g. $30) before knowing their rate.
+  const theyNamedPrice = theirPrice != null;
   const priceGuidance = ceiling == null
-    ? `This site is below our paid tiers, so DO NOT offer money. Push for a free or editorial inclusion only (relevance, a useful tool for their readers, we can provide a short written blurb and quote text inline).`
-    : `You may offer up to ${settings.currency} ${ceiling} MAXIMUM, never more. Open around ${settings.currency} ${opening} and move up only in small steps if they push back. Floor is ${settings.currency} ${floor}; never go below it. ${aggr} ${settings.anti_highball}`;
+    ? `This site is below our paid tiers, so DO NOT offer or mention money. Push for a free or editorial inclusion only (relevance, a useful tool for their readers, we can provide a short written blurb and quote text inline).`
+    : !theyNamedPrice
+      ? `We have NOT heard their pricing yet, so DO NOT propose, name, or even hint at any dollar amount. First, naturally ASK what they typically charge (their rate or fee) for this kind of sponsored or included placement so we can evaluate on our end. One clear, collaborative ask. We only put a number on the table AFTER they give theirs. (Internal cap for later, NEVER reveal or imply: ${settings.currency} ${ceiling}.)`
+      : `They named ${settings.currency} ${theirPrice}. You may go up to ${settings.currency} ${ceiling} MAXIMUM, never more, and never below ${settings.currency} ${floor}. If their number is at or under the cap, negotiate gently DOWN from it and aim to land under it; if it is above the cap, counter down toward the cap without exceeding it. ${aggr} ${settings.anti_highball}`;
 
   const assist = input.assistInput?.trim();
   const assistBlock = assist

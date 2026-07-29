@@ -19,6 +19,10 @@ const EXACT = new Set([
   // inquiry / submission desks and other non-person mailboxes seen in the wild
   "submissions", "submission", "submit", "care", "customercare", "customerservice", "customer",
   "partner", "obits", "obituaries", "alerts", "alert", "bot",
+  // product / plan / marketing-funnel mailboxes (e.g. plus@shopify.com, a footer CTA scraped
+  // onto every author). Never a person; whole-local-part match only, so no name collisions.
+  "plus", "pro", "premium", "enterprise", "business", "demo", "trial", "upgrade", "pricing",
+  "signup", "getstarted", "start", "join", "invest", "investors", "ir", "affiliate", "affiliates",
 ]);
 // Collapsed local-part contains one of these → generic (catches compound role addresses).
 // Only DISTINCTIVE stems that can't appear inside a human name (never short/name-like tokens).
