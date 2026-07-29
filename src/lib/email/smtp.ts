@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 
 // Single reusable SMTP transport, built from .env.local credentials.
 // Gmail app password auth over implicit TLS (port 465).
@@ -85,6 +85,33 @@ export async function sendEmailAs(opts: {
     const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
     const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, inReplyTo: opts.inReplyTo, references: opts.references, text: opts.body, html: htmlify(opts.body), attachments: opts.attachments });
     tx.close();
+    return { ok: true, messageId: info.messageId };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "send failed" };
+  }
+}
+
+// Pooled transport for BURST sending from one Gmail account. Reuses a few authenticated
+// connections across many messages (one login per connection, not per email) so a big
+// one-shot batch (hundreds/thousands) sends fast without tripping Gmail's per-login limits.
+// Caller must close() it when the batch is done.
+export function createPooledUserTransport(user: string, pass: string): Transporter {
+  return nodemailer.createTransport({
+    host: "smtp.gmail.com", port: 465, secure: true,
+    auth: { user, pass },
+    pool: true, maxConnections: 5, maxMessages: 200,
+  });
+}
+
+// Send one message over an already-built (pooled) transport. Same shaping as sendEmailAs but
+// without creating/closing a transport per call.
+export async function sendVia(tx: Transporter, opts: {
+  user: string; fromName?: string; to: string; subject: string; body: string; cc?: string;
+  inReplyTo?: string; references?: string; attachments?: MailAttachment[];
+}): Promise<SendResult> {
+  try {
+    const from = opts.fromName ? `"${opts.fromName}" <${opts.user}>` : opts.user;
+    const info = await tx.sendMail({ from, to: opts.to, cc: opts.cc, subject: opts.subject, inReplyTo: opts.inReplyTo, references: opts.references, text: opts.body, html: htmlify(opts.body), attachments: opts.attachments });
     return { ok: true, messageId: info.messageId };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "send failed" };

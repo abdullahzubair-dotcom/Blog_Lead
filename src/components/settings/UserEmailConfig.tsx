@@ -97,14 +97,11 @@ export function UserEmailConfigCard() {
             <Label>Send until (hr)</Label>
             <Input type="number" min={1} max={24} value={cfg.send_hour_end} onChange={(e) => setCfg({ ...cfg, send_hour_end: Number(e.target.value) })} />
           </div>
-          <div className="space-y-1.5">
-            <Label>Gap (min)</Label>
-            <Input type="number" min={1} value={cfg.gap_minutes} onChange={(e) => setCfg({ ...cfg, gap_minutes: Number(e.target.value) })} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Max per day</Label>
-            <Input type="number" min={1} value={cfg.daily_cap} onChange={(e) => setCfg({ ...cfg, daily_cap: Number(e.target.value) })} />
-          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+          <p><b className="text-foreground">Burst sending:</b> emails no longer trickle out spaced apart. When you hit Send, the whole batch is queued for <b>one</b> time, the next open of your <b>Send from</b> hour in your timezone (or right away if you&apos;re already inside the window), then delivered together within about an hour, however many are queued.</p>
+          <p className="mt-1.5 text-amber-500/90">Heads up: blasting a very large batch from one Gmail can trip Google&apos;s sending limits (~2,000/day on Workspace) or spam filters. Any rejected sends show up as failed on the Sending page.</p>
         </div>
 
         <div className="flex justify-end gap-2">

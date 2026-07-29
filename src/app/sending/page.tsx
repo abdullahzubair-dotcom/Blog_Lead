@@ -589,7 +589,7 @@ export default function SendingPage() {
           <>
             {upcomingTotal > 0 && (
               <div className="px-4 py-2 text-[11px] text-muted-foreground bg-blue-500/5 border-b border-border">
-                All {upcomingTotal} are scheduled across multiple days (capped per sender per day) — nothing is dropped; overflow automatically rolls to the next day.
+                All {upcomingTotal} are queued for one send time (the next open of your send window) and go out together in a burst, not spaced out.
               </div>
             )}
             <div className="max-h-[560px] overflow-y-auto">

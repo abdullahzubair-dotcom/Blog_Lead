@@ -2239,6 +2239,49 @@ export async function rescheduleScheduledToTimezone(timezone: string): Promise<n
   return moved;
 }
 
+// Re-stamp every currently-queued INITIAL email onto the single burst instant (its sender's
+// next send-window open in their timezone, or right now if we're already inside the window),
+// so a backlog scheduled under the old spaced-out model also bursts and sends instead of
+// trickling across days. Follow-ups and negotiation replies are left alone — their delay is
+// intentional. Idempotent: only rows not already on the instant are moved. Returns count moved.
+export async function reburstScheduledInitials(now = new Date()): Promise<number> {
+  const { computeSmartSchedule } = await import("@/lib/email/schedule");
+  const rows = await fetchAllRows<{ id: string; sender_email: string | null }>(
+    "outreach_emails", "id, sender_email",
+    (q) => q.eq("status", "scheduled").or("kind.is.null,kind.eq.initial"),
+  );
+  if (!rows.length) return 0;
+  const bySender = new Map<string, string[]>();
+  for (const r of rows) {
+    const s = r.sender_email ?? "";
+    if (!bySender.has(s)) bySender.set(s, []);
+    bySender.get(s)!.push(r.id);
+  }
+  let moved = 0;
+  for (const [sender, ids] of bySender) {
+    const cfg = sender ? await getUserEmailConfig(sender) : null;
+    const config = {
+      id: "", workflow_id: "", provider: "smtp" as const, created_at: "",
+      timezone: cfg?.timezone ?? DEFAULT_USER_CONFIG.timezone,
+      send_hour_start: cfg?.send_hour_start ?? DEFAULT_USER_CONFIG.send_hour_start,
+      send_hour_end: cfg?.send_hour_end ?? DEFAULT_USER_CONFIG.send_hour_end,
+      gap_minutes: 0, daily_cap: 0,
+    };
+    const at = computeSmartSchedule([{ id: "_", tz: config.timezone }], config, now)[0]?.at;
+    if (!at) continue;
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const { error } = await supabaseAdmin
+        .from("outreach_emails")
+        .update({ scheduled_at: at })
+        .in("id", chunk)
+        .neq("scheduled_at", at); // skip rows already on the burst instant
+      if (!error) moved += chunk.length;
+    }
+  }
+  return moved;
+}
+
 // Sending status for the progress page. Counts are ALL-TIME (via exact count queries, not
 // a capped page), so the top stats reflect the entirety of sending history. The queued and
 // sent/failed lists are paginated so the UI can "load more" back through everything.

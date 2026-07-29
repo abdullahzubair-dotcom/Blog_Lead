@@ -105,10 +105,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       skippedContacted,
       sender: senderEmail,
       sentBy: sentByEmail,
+      // Burst: every email shares one send instant, so firstAt === lastAt.
       firstAt: slots[0]?.at,
       lastAt: slots[slots.length - 1]?.at,
       timezone: config.timezone,
-      config: { timezone: config.timezone, gap_minutes: config.gap_minutes, daily_cap: config.daily_cap, window: `${config.send_hour_start}:00–${config.send_hour_end}:00` },
+      config: { timezone: config.timezone, mode: "burst", window: `${config.send_hour_start}:00–${config.send_hour_end}:00` },
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

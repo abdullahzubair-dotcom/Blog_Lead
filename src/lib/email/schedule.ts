@@ -37,11 +37,6 @@ function localHour(ms: number, tz: string): number {
   return partsInTz(ms, tz).h;
 }
 
-function withinWindow(ms: number, tz: string, startH: number, endH: number): boolean {
-  const h = localHour(ms, tz);
-  return h >= startH && h < endH;
-}
-
 // Local window start (startH:00) on the same local day as `ms`.
 function windowStartSameDay(ms: number, tz: string, startH: number): number {
   const p = partsInTz(ms, tz);
@@ -65,18 +60,17 @@ function earliestFor(nowMs: number, tz: string, startH: number, endH: number): n
   return nowMs;
 }
 
-function utcDayKey(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
 function clampHour(h: number | undefined, dflt: number): number {
   if (h == null || isNaN(h)) return dflt;
   return Math.min(23, Math.max(0, Math.floor(h)));
 }
 
-// Smart schedule: every email lands inside its recipient's LOCAL [startH,endH) window,
-// while all sends share one account so they're spaced >= gap_minutes apart globally and
-// capped at daily_cap per calendar day. Greedy by each recipient's earliest local slot.
+// Burst schedule: NO spacing and NO per-day cap. Every email is stamped with ONE optimal
+// send instant so the whole batch goes out together (the process cron then drains it within
+// the hour, even if it's 1500 emails on one account). The optimal instant is the next open
+// of the sender's LOCAL [startH,endH) window: right now if we're already inside the window,
+// else today's window start (if it hasn't begun) or tomorrow's (if the window already closed).
+// gap_minutes / daily_cap on the config are intentionally ignored here.
 export function computeSmartSchedule(
   recipients: ScheduleRecipient[],
   config: EmailSendConfig,
@@ -84,48 +78,9 @@ export function computeSmartSchedule(
 ): ScheduledSlot[] {
   const startH = clampHour(config.send_hour_start, 9);
   const endH = Math.max(startH + 1, clampHour(config.send_hour_end, 17));
-  const gapMs = Math.max(1, config.gap_minutes || 15) * 60_000;
-  const cap = Math.max(1, config.daily_cap || 50);
-  const nowMs = now.getTime();
-
-  const withEarliest = recipients.map((r) => ({
-    ...r,
-    earliest: earliestFor(nowMs, r.tz, startH, endH),
-  }));
-  withEarliest.sort((a, b) => a.earliest - b.earliest);
-
-  const dayCount: Record<string, number> = {};
-  let lastSlot = -Infinity;
-  const out: ScheduledSlot[] = [];
-
-  for (const r of withEarliest) {
-    let cand = Math.max(r.earliest, lastSlot === -Infinity ? r.earliest : lastSlot + gapMs);
-
-    // Normalize into a valid slot (bounded to avoid any pathological loop).
-    for (let iter = 0; iter < 800; iter++) {
-      if (!withinWindow(cand, r.tz, startH, endH)) {
-        // If we're before today's window, jump to today's start; else next day's start.
-        cand = localHour(cand, r.tz) < startH
-          ? windowStartSameDay(cand, r.tz, startH)
-          : windowStartNextDay(cand, r.tz, startH);
-        continue;
-      }
-      if (lastSlot !== -Infinity && cand < lastSlot + gapMs) {
-        cand = lastSlot + gapMs;
-        continue;
-      }
-      if ((dayCount[utcDayKey(cand)] ?? 0) >= cap) {
-        cand = windowStartNextDay(cand, r.tz, startH);
-        continue;
-      }
-      break;
-    }
-
-    out.push({ id: r.id, at: new Date(cand).toISOString() });
-    lastSlot = cand;
-    dayCount[utcDayKey(cand)] = (dayCount[utcDayKey(cand)] ?? 0) + 1;
-  }
-
-  // Return in send order
-  return out.sort((a, b) => a.at.localeCompare(b.at));
+  // One instant for the whole batch, computed in the SENDER's timezone (all of this queue
+  // sends from one account, so they share it). Every email lands on exactly this time.
+  const optimal = earliestFor(now.getTime(), config.timezone, startH, endH);
+  const at = new Date(optimal).toISOString();
+  return recipients.map((r) => ({ id: r.id, at }));
 }

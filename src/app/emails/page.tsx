@@ -231,7 +231,8 @@ export default function EmailsPage() {
     } else if (res.ok && data.scheduled > 0) {
       const skipped = data.skippedContacted ? ` (${data.skippedContacted} skipped — already contacted elsewhere)` : "";
       const via = data.sentBy && data.sender && data.sentBy !== data.sender ? ` (sent by ${data.sentBy})` : "";
-      toast.success(`Scheduled ${data.scheduled} emails from ${data.sender}${via}${skipped}. Opening progress…`);
+      const at = data.firstAt ? ` to send together around ${new Date(data.firstAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
+      toast.success(`Queued ${data.scheduled} emails from ${data.sender}${via}${at}${skipped}. Opening progress…`);
       router.push("/sending");
     } else if (res.ok) {
       toast.error(data.reason ?? "Nothing to schedule — generate emails first.");
@@ -987,18 +988,6 @@ export default function EmailsPage() {
                     onChange={(e) => setConfig({ ...config, send_hour_end: Number(e.target.value) })} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>Gap between emails (min)</Label>
-                  <Input type="number" min={1} value={config.gap_minutes}
-                    onChange={(e) => setConfig({ ...config, gap_minutes: Number(e.target.value) })} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Max per day</Label>
-                  <Input type="number" min={1} value={config.daily_cap}
-                    onChange={(e) => setConfig({ ...config, daily_cap: Number(e.target.value) })} />
-                </div>
-              </div>
               <div className="space-y-1.5">
                 <Label>From name</Label>
                 <Input placeholder="Waleed Idrees" value={config.from_name ?? ""}
@@ -1011,7 +1000,7 @@ export default function EmailsPage() {
                 <p className="text-xs text-muted-foreground">Leave blank to use the default sender configured on the server.</p>
               </div>
               <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-                Every email sends {config.send_hour_start}:00–{config.send_hour_end}:00 {config.timezone}, {config.gap_minutes} min apart, up to {config.daily_cap}/day. Overflow rolls to the next day.
+                All emails go out in one burst at {config.send_hour_start}:00 {config.timezone} (the next open of your send window, or now if you&apos;re already inside it), delivered together within about an hour, not spaced apart.
               </div>
             </div>
           )}
