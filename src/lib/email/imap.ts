@@ -127,7 +127,7 @@ export async function detectReplies(user: string, pass: string, outstanding: Out
       const pending = new Map<string, { uid: number; kind: ReplyKind; from: string; subject: string; structure: any; date: string | null }>();
       for await (const msg of client.fetch(
         uids,
-        { uid: true, envelope: true, bodyStructure: true, headers: ["in-reply-to", "references", "from", "auto-submitted", "x-autoreply", "x-autorespond", "x-auto-response-suppress", "precedence", "content-type", "x-failed-recipients", "action", "status"] },
+        { uid: true, envelope: true, internalDate: true, bodyStructure: true, headers: ["in-reply-to", "references", "from", "auto-submitted", "x-autoreply", "x-autorespond", "x-auto-response-suppress", "precedence", "content-type", "x-failed-recipients", "action", "status"] },
         { uid: true },
       )) {
         const hdr = msg.headers?.toString() ?? "";
@@ -151,7 +151,12 @@ export async function detectReplies(user: string, pass: string, outstanding: Out
         const kind = classify(from, subject, hlow);
         // The inbound message's REAL date (from its envelope) — used to stamp replied_at with a
         // stable timestamp, so re-detecting the same reply on a later sweep can't advance it.
-        const date = msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null;
+        // Prefer the message's own Date header; fall back to the server-assigned internalDate
+        // (ALWAYS present) so replied_at is stamped with a STABLE per-message date, never the
+        // sweep clock. A clock-based stamp is exactly what advanced every sweep and caused the
+        // auto-reply runaway, so we make sure that fallback can never be reached in practice.
+        const rawDate = msg.envelope?.date ?? (msg as any).internalDate ?? null;
+        const date = rawDate ? new Date(rawDate).toISOString() : null;
         const existing = pending.get(hitId);
         // Prefer a genuine reply over a bounce/auto if several inbound messages matched one send.
         if (!existing || (existing.kind !== "reply" && kind === "reply")) {
