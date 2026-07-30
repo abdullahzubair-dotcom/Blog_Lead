@@ -39,7 +39,7 @@ export interface OutstandingSent {
   parent_id?: string | null;  // thread anchor for followup/negotiation rows
 }
 
-export interface MatchInfo { uid: number; kind: ReplyKind; from: string; subject: string; excerpt: string }
+export interface MatchInfo { uid: number; kind: ReplyKind; from: string; subject: string; excerpt: string; date: string | null }
 
 // Decide what an inbound message actually is, from its From address, subject and headers.
 export function classify(from: string, subject: string, headers: string): ReplyKind {
@@ -124,7 +124,7 @@ export async function detectReplies(user: string, pass: string, outstanding: Out
       if (uids.length === 0) return matches;
       if (uids.length > 500) uids = uids.slice(-500);
 
-      const pending = new Map<string, { uid: number; kind: ReplyKind; from: string; subject: string; structure: any }>();
+      const pending = new Map<string, { uid: number; kind: ReplyKind; from: string; subject: string; structure: any; date: string | null }>();
       for await (const msg of client.fetch(
         uids,
         { uid: true, envelope: true, bodyStructure: true, headers: ["in-reply-to", "references", "from", "auto-submitted", "x-autoreply", "x-autorespond", "x-auto-response-suppress", "precedence", "content-type", "x-failed-recipients", "action", "status"] },
@@ -149,16 +149,19 @@ export async function detectReplies(user: string, pass: string, outstanding: Out
         if (!hitId) continue;
 
         const kind = classify(from, subject, hlow);
+        // The inbound message's REAL date (from its envelope) — used to stamp replied_at with a
+        // stable timestamp, so re-detecting the same reply on a later sweep can't advance it.
+        const date = msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : null;
         const existing = pending.get(hitId);
         // Prefer a genuine reply over a bounce/auto if several inbound messages matched one send.
         if (!existing || (existing.kind !== "reply" && kind === "reply")) {
-          pending.set(hitId, { uid: msg.uid!, kind, from, subject, structure: (msg as any).bodyStructure });
+          pending.set(hitId, { uid: msg.uid!, kind, from, subject, structure: (msg as any).bodyStructure, date });
         }
       }
 
       for (const [id, m] of pending) {
         const excerpt = await fetchExcerpt(client, m.uid, m.structure);
-        matches.set(id, { uid: m.uid, kind: m.kind, from: m.from, subject: m.subject, excerpt });
+        matches.set(id, { uid: m.uid, kind: m.kind, from: m.from, subject: m.subject, excerpt, date: m.date });
       }
     } finally { lock.release(); }
     await client.logout();
@@ -224,7 +227,12 @@ export async function runReplyDetection(opts: { backfillDays?: number; minMinute
           // replied_at and wrongly re-trigger auto-negotiation).
           const row = rowById.get(id);
           const anchorId = row && row.kind && row.kind !== "initial" && row.parent_id ? row.parent_id : id;
-          const isNew = await recordReplyOnAnchor(anchorId, { ...meta, reply_sentiment: sentiment }, nowIso);
+          // Stamp with the reply's REAL date (clamped so a bad/future header can't jump ahead),
+          // NOT the sweep time. This is what stops the auto-negotiation runaway: re-detecting the
+          // same reply yields the same date, so replied_at never advances past our last send and
+          // the "already answered" guard holds.
+          const replyAt = m.date && m.date <= nowIso ? m.date : nowIso;
+          const isNew = await recordReplyOnAnchor(anchorId, { ...meta, reply_sentiment: sentiment }, replyAt);
           if (isNew) {
             result.repliesFound++;
             // They replied — immediately stop any follow-up already scheduled to them, so a

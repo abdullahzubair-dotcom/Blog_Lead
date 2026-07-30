@@ -1594,16 +1594,27 @@ export async function getNegotiationActivity(anchorId: string, limit = 30): Prom
   return (data ?? []) as any;
 }
 
+// Records a genuine reply on the thread ANCHOR (the initial). `replyAtIso` is the reply's REAL
+// date, not the sweep time. Monotonic + idempotent: it advances `replied_at` ONLY for a
+// genuinely newer reply. Re-detecting the same (or older) reply on a later IMAP sweep returns
+// false and leaves replied_at untouched, so it can never bump forward past our last sent answer
+// and re-trigger auto-negotiation (that was the multi-reply runaway). Returns true only when a
+// NEW reply was recorded.
 export async function recordReplyOnAnchor(
   anchorId: string,
   meta: { reply_kind?: string | null; reply_from?: string | null; reply_subject?: string | null; reply_excerpt?: string | null; reply_sentiment?: string | null },
-  nowIso: string,
+  replyAtIso: string,
 ): Promise<boolean> {
   const { data } = await supabaseAdmin.from("outreach_emails").select("replied_at, reply_excerpt").eq("id", anchorId).maybeSingle();
+  const existingAt = (data as any)?.replied_at as string | null;
   const prev = ((data as any)?.reply_excerpt ?? "").trim();
   const next = (meta.reply_excerpt ?? "").trim();
-  if ((data as any)?.replied_at && prev && prev === next) return false; // same reply already recorded
-  await supabaseAdmin.from("outreach_emails").update({ ...meta, replied_at: nowIso, bounced_at: null }).eq("id", anchorId);
+  // Exact same reply already on file — never re-stamp.
+  if (existingAt && prev && prev === next) return false;
+  // A re-detection of an already-recorded (same-or-older) reply — do NOT advance replied_at,
+  // or the auto-negotiation guard would think a fresh reply arrived and answer again.
+  if (existingAt && replyAtIso <= existingAt) return false;
+  await supabaseAdmin.from("outreach_emails").update({ ...meta, replied_at: replyAtIso, bounced_at: null }).eq("id", anchorId);
   return true;
 }
 
