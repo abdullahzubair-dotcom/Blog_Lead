@@ -1612,8 +1612,9 @@ export async function recordReplyOnAnchor(
   // Exact same reply already on file — never re-stamp.
   if (existingAt && prev && prev === next) return false;
   // A re-detection of an already-recorded (same-or-older) reply — do NOT advance replied_at,
-  // or the auto-negotiation guard would think a fresh reply arrived and answer again.
-  if (existingAt && replyAtIso <= existingAt) return false;
+  // or the auto-negotiation guard would think a fresh reply arrived and answer again. Compare as
+  // epoch-ms, not strings: JS toISOString ("…Z") and Postgres ("…+00:00") formats sort differently.
+  if (existingAt && replyAtIso && new Date(replyAtIso).getTime() <= new Date(existingAt).getTime()) return false;
   await supabaseAdmin.from("outreach_emails").update({ ...meta, replied_at: replyAtIso, bounced_at: null }).eq("id", anchorId);
   return true;
 }
